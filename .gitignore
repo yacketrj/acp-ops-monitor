@@ -1,0 +1,22 @@
+# Secrets
+*.txt
+!README.md
+
+# Webhook URLs
+*webhook*
+*secret*
+
+# Environment
+.env
+.env.*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Cache
+.cache/
+*.cache

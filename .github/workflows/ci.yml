@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  shellcheck:
+    name: Shell Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: './'
+          severity: warning
+
+  validate-json:
+    name: Validate JSON
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate JSON files
+        run: |
+          find . -name "*.json" -not -path "./node_modules/*" -not -path "./.git/*" -exec python3 -c "import json,sys; json.load(open(sys.argv[1]))" {} \; || { echo "Invalid JSON found"; exit 1; }
+          echo "All JSON files valid"
+
+  security:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run semgrep
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/security-audit
+            p/secrets
+            p/bash
+      - name: Run trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+
+  ci-gate:
+    name: CI Gate
+    if: ${{ always() }}
+    needs: [shellcheck, validate-json, security]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every check to pass
+        env:
+          SHELLCHECK: ${{ needs.shellcheck.result }}
+          JSON: ${{ needs.validate-json.result }}
+          SECURITY: ${{ needs.security.result }}
+        run: |
+          set -euo pipefail
+          failed=0
+          for result in "$SHELLCHECK" "$JSON" "$SECURITY"; do
+            if [ "$result" != "success" ]; then
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "One or more required checks did not pass."
+            exit 1
+          fi
+          echo "All required checks passed."
