@@ -106,7 +106,8 @@ if [ "$UPSTREAM" != "$ORIGIN_MAIN" ] && [ "$AHEAD_OF_UPSTREAM" = "0" ]; then
   # ─── Sync active feature branches (modified in last 30 days) ───
   echo "  Syncing active feature branches..."
 
-  ACTIVE_BRANCHES=$(git for-each-ref --sort=-committerdate --format='%(refname:short) %(committerdate:short)' refs/heads/feature/ refs/heads/fix/ 2>/dev/null | awk -v cutoff=$(date -d '30 days ago' +%Y-%m-%d) '$2 >= cutoff {print $1}' || echo "")
+  CUTOFF_DATE="$(date -d '30 days ago' +%Y-%m-%d)"
+  ACTIVE_BRANCHES=$(git for-each-ref --sort=-committerdate --format='%(refname:short) %(committerdate:short)' refs/heads/feature/ refs/heads/fix/ 2>/dev/null | awk -v cutoff="$CUTOFF_DATE" '$2 >= cutoff {print $1}' || echo "")
 
   if [ -n "$ACTIVE_BRANCHES" ]; then
     echo "    Found $(echo "$ACTIVE_BRANCHES" | wc -l) active branches"
@@ -276,7 +277,7 @@ fi
 
 # Check for resolved issues (were OPEN, now clean or different fingerprint)
 RESOLVED=""
-while IFS=" " read -r old_fingerprint old_report_short; do
+while IFS=" " read -r old_fingerprint _old_report_short; do
   if [ "$old_fingerprint" != "$FINGERPRINT" ] && [ -n "$old_fingerprint" ]; then
     RESOLVED="${RESOLVED}✅ Issue \`${old_fingerprint}\` resolved\n"
   fi
@@ -286,7 +287,7 @@ done < "$STATE_FILE"
 if [ "$ISSUES" -gt 0 ]; then
   echo "$FINGERPRINT ${REPORT:0:80}" > "$STATE_FILE"
 else
-  > "$STATE_FILE"
+  : > "$STATE_FILE"
 fi
 
 # Send notifications
