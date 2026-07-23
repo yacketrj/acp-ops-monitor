@@ -27,7 +27,23 @@ git fetch origin --quiet 2>/dev/null || true
 UPSTREAM=$(git rev-parse upstream/main)
 ORIGIN_MAIN=$(git rev-parse origin/main 2>/dev/null || echo "")
 
-if [ "$UPSTREAM" != "$ORIGIN_MAIN" ]; then
+# BUG FIX (2026-07-23): the original unconditional
+# `if [ "$UPSTREAM" != "$ORIGIN_MAIN" ]` below does not check *direction* —
+# it fires identically whether origin/main is genuinely behind upstream, OR
+# origin/main is AHEAD (has fork-local merged work upstream doesn't have
+# yet), OR the two have diverged. Combined with the unconditional
+# `git reset --hard upstream/main` + force-push a few lines down, this
+# silently destroyed three merged PRs on this fork's main in a single day
+# (#103, #104, #108) — each time a PR merged into origin/main, the very
+# next hourly run saw a SHA mismatch and reset origin/main straight back to
+# upstream/main, discarding the merge with no warning. Fast-forwarding a
+# genuinely-behind fork is safe; resetting an ahead-or-diverged fork is
+# not. Only treat this as a sync-needed case when upstream/main is NOT
+# already reachable from origin/main's history AND origin/main has no
+# commits of its own that upstream/main lacks (i.e. origin/main is a pure
+# ancestor of upstream/main — the fork is strictly, only behind).
+AHEAD_OF_UPSTREAM=$(git rev-list upstream/main..origin/main --count 2>/dev/null || echo "0")
+if [ "$UPSTREAM" != "$ORIGIN_MAIN" ] && [ "$AHEAD_OF_UPSTREAM" = "0" ]; then
   BEHIND=$(git rev-list origin/main..upstream/main --count 2>/dev/null || echo "?")
   echo "  SYNC: core fork $BEHIND commits behind — syncing main..."
 
@@ -90,7 +106,8 @@ if [ "$UPSTREAM" != "$ORIGIN_MAIN" ]; then
   # ─── Sync active feature branches (modified in last 30 days) ───
   echo "  Syncing active feature branches..."
 
-  ACTIVE_BRANCHES=$(git for-each-ref --sort=-committerdate --format='%(refname:short) %(committerdate:short)' refs/heads/feature/ refs/heads/fix/ 2>/dev/null | awk -v cutoff=$(date -d '30 days ago' +%Y-%m-%d) '$2 >= cutoff {print $1}' || echo "")
+  CUTOFF_DATE="$(date -d '30 days ago' +%Y-%m-%d)"
+  ACTIVE_BRANCHES=$(git for-each-ref --sort=-committerdate --format='%(refname:short) %(committerdate:short)' refs/heads/feature/ refs/heads/fix/ 2>/dev/null | awk -v cutoff="$CUTOFF_DATE" '$2 >= cutoff {print $1}' || echo "")
 
   if [ -n "$ACTIVE_BRANCHES" ]; then
     echo "    Found $(echo "$ACTIVE_BRANCHES" | wc -l) active branches"
@@ -148,6 +165,13 @@ if [ "$UPSTREAM" != "$ORIGIN_MAIN" ]; then
   elif [ "$CURRENT_BRANCH" != "main" ]; then
     git checkout "$CURRENT_BRANCH" 2>/dev/null || git checkout integration/discord 2>/dev/null || true
   fi
+elif [ "$UPSTREAM" != "$ORIGIN_MAIN" ]; then
+  # origin/main is AHEAD of or has DIVERGED from upstream/main (has
+  # fork-local merged work upstream doesn't have) — this is expected and
+  # healthy, NOT an error condition, and must never trigger a reset. See
+  # the BUG FIX comment above for why this branch exists as its own case
+  # rather than falling through to the reset logic.
+  echo -e "  ${GREEN}OK:${NC} core fork main is ahead of/diverged from upstream by design (local merges not yet upstreamed) — not syncing"
 else
   echo -e "  ${GREEN}OK:${NC} core fork synced ($(echo $UPSTREAM | cut -c1-7))"
 fi
@@ -160,13 +184,19 @@ if [ -d "$CATALOG_DIR" ]; then
   git fetch origin main --quiet 2>/dev/null || true
   CAT_UP=$(git rev-parse upstream/main 2>/dev/null || echo "")
   CAT_OR=$(git rev-parse origin/main 2>/dev/null || echo "")
-  if [ -n "$CAT_UP" ] && [ -n "$CAT_OR" ] && [ "$CAT_UP" != "$CAT_OR" ]; then
+  # Same direction-blind bug as the core fork sync above — fixed the same
+  # way: only reset when origin/main is a strict, pure ancestor of
+  # upstream/main (genuinely behind, nothing of its own to lose).
+  CAT_AHEAD=$(git rev-list upstream/main..origin/main --count 2>/dev/null || echo "0")
+  if [ -n "$CAT_UP" ] && [ -n "$CAT_OR" ] && [ "$CAT_UP" != "$CAT_OR" ] && [ "$CAT_AHEAD" = "0" ]; then
     BEHIND=$(git rev-list origin/main..upstream/main --count 2>/dev/null || echo "?")
     echo "  SYNC: catalog fork $BEHIND commits behind — syncing..."
     git checkout main 2>/dev/null || true
     git reset --hard upstream/main 2>/dev/null
     git push origin main --force-with-lease --no-verify 2>&1 | tail -1
     echo -e "  ${GREEN}OK:${NC} catalog synced"
+  elif [ -n "$CAT_UP" ] && [ -n "$CAT_OR" ] && [ "$CAT_UP" != "$CAT_OR" ]; then
+    echo -e "  ${GREEN}OK:${NC} catalog fork main is ahead of/diverged from upstream by design — not syncing"
   else
     echo -e "  ${GREEN}OK:${NC} catalog fork synced"
   fi
@@ -247,7 +277,7 @@ fi
 
 # Check for resolved issues (were OPEN, now clean or different fingerprint)
 RESOLVED=""
-while IFS=" " read -r old_fingerprint old_report_short; do
+while IFS=" " read -r old_fingerprint _old_report_short; do
   if [ "$old_fingerprint" != "$FINGERPRINT" ] && [ -n "$old_fingerprint" ]; then
     RESOLVED="${RESOLVED}✅ Issue \`${old_fingerprint}\` resolved\n"
   fi
@@ -257,7 +287,7 @@ done < "$STATE_FILE"
 if [ "$ISSUES" -gt 0 ]; then
   echo "$FINGERPRINT ${REPORT:0:80}" > "$STATE_FILE"
 else
-  > "$STATE_FILE"
+  : > "$STATE_FILE"
 fi
 
 # Send notifications
