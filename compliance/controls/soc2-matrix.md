@@ -22,10 +22,13 @@ for the ecosystem-wide compliance posture this repo contributes evidence to.
 | Availability | Cron job failure does not corrupt repository state (idempotent, safe-to-retry operations) | ✅ Implemented | `lib/sync-direction.sh` guarantees no destructive op fires on an ambiguous or unsafe state |
 | Processing Integrity | Shell logic covered by automated tests, not lint-only | ✅ Implemented | `tests/*.bats`, run in CI |
 | Processing Integrity | Shell syntax/style linting | ✅ Implemented | ShellCheck in CI |
+| Processing Integrity | GitHub Actions workflow linting (catches malformed job dependencies, invalid expressions, missing shell strictness) | ✅ Implemented | `actionlint` in CI, checksum-verified pinned-version binary download |
+| Processing Integrity | Markdown documentation linting (catches broken fenced-code blocks, missing language hints, malformed structure) | ✅ Implemented | `markdownlint-cli2` in CI, config at `.markdownlint-cli2.jsonc` |
 | Confidentiality | No database, no persistent user-identifying storage | ✅ Implemented | N/A by design — this repo has no data layer |
 | Privacy | No PII collected, processed, or transmitted | ✅ Implemented | N/A by design |
 | Change Management | All changes go through PR + required CI checks | ✅ Implemented (process) | GitHub PR history |
 | Dependency Management | Automated dependency updates (GitHub Actions) | ✅ Implemented | `.github/dependabot.yml` |
+| Dependency Management | Software Bill of Materials (SBOM) | ➖ Not applicable | This repo has no package manager, no `package.json`/`requirements.txt`, and ships no built artifact — it is plain bash scripts with only system-tool prerequisites (`git`, `gh`, `python3`), not bundled dependencies. There is no dependency tree to enumerate. Contrast with `Arrakis-Control-Panel`, which does generate a CycloneDX SBOM (`npm run sbom`) because it has a real npm dependency tree and ships versioned release artifacts — that is the correct place for SBOM in this ecosystem, not here. If this repo ever gains a real dependency manifest, this row must be revisited before it ships. |
 
 ## Known Gaps (Tracked, Not Hidden)
 
@@ -42,6 +45,9 @@ for the ecosystem-wide compliance posture this repo contributes evidence to.
 | `ludeeus/action-shellcheck@master`, `aquasecurity/trivy-action@master`, `gitleaks/gitleaks-action@v3` were floating branch/tag refs, not pinned SHAs | All three pinned to specific, verified commit SHAs in `.github/workflows/ci.yml`, matching the convention already used for `actions/checkout` |
 | `returntocorp/semgrep-action` was unmaintained (no commits since Jan 2024; its current home, `semgrep/semgrep-action`, is archived) | Replaced with a direct `semgrep` CLI invocation in CI, matching `.pre-commit-config.yaml`'s local hook exactly — closes the local/CI parity gap this created |
 | Two separate workflows were both literally named "CI Gate" (`ci.yml`'s internal job and a standalone `ci-gate.yml`), making branch-protection required-check configuration ambiguous | Consolidated into a single `ci-gate` job inside `ci.yml`; the standalone `ci-gate.yml` (whose only check, `bash -n` syntax validation, was a strict subset of what ShellCheck already covers) was removed |
+| `p/bash` semgrep ruleset had been silently removed from Semgrep's public registry (confirmed via the registry API — the ruleset no longer exists at all, not just moved), causing the newly-added direct-CLI semgrep step to fail with an HTTP 404 the first time it actually ran with `--error` enabled | Removed the `p/bash` reference; shell-specific static analysis remains covered by the separate ShellCheck job |
+| No GitHub Actions workflow linting — a malformed job dependency or invalid expression would only be caught by a live CI run failing | Added `actionlint` (checksum-verified pinned binary download, not a third-party Action wrapper) as its own CI job and local pre-commit hook |
+| No markdown linting — 15 documentation files added during this repo's compliance/docs buildout had zero automated style/correctness checking | Added `markdownlint-cli2` as its own CI job and local pre-commit hook; found and fixed two real issues (a fenced code block with no language hint in `README.md`, missing blank lines around a fence in `compliance/runbooks/incident-response.md`) on first run |
 | `lib/sync-direction.sh`'s destructive-reset safety logic had no automated test coverage | Added `tests/sync-direction.bats`, run in CI on every push/PR |
 
 ## Sources

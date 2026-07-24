@@ -48,3 +48,18 @@ repos:
         pass_filenames: false
         always_run: true
         verbose: true
+
+      - id: actionlint
+        name: actionlint (workflow lint)
+        entry: actionlint
+        language: system
+        files: ^\.github/workflows/.*\.ya?ml$
+        pass_filenames: false
+
+      - id: markdownlint
+        name: markdownlint-cli2
+        entry: npx --yes markdownlint-cli2@0.23.1
+        language: system
+        types: [markdown]
+        pass_filenames: false
+        args: ["**/*.md"]

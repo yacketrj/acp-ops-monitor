@@ -26,6 +26,32 @@ jobs:
           scandir: './'
           severity: warning
 
+  actionlint:
+    name: Workflow Lint (actionlint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download actionlint (pinned version, checksum-verified release binary)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz"
+          curl -fsSL -o actionlint_checksums.txt \
+            "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_checksums.txt"
+          grep "actionlint_1.7.12_linux_amd64.tar.gz" actionlint_checksums.txt | sha256sum -c -
+          tar -xzf actionlint.tar.gz actionlint
+          chmod +x actionlint
+      - name: Run actionlint
+        run: ./actionlint -color
+
+  markdownlint:
+    name: Markdown Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run markdownlint-cli2
+        run: npx --yes markdownlint-cli2@0.23.1 "**/*.md"
+
   test:
     name: Shell Test Suite (bats)
     runs-on: ubuntu-latest
@@ -86,19 +112,21 @@ jobs:
   ci-gate:
     name: CI Gate
     if: ${{ always() }}
-    needs: [shellcheck, test, validate-json, security]
+    needs: [shellcheck, actionlint, markdownlint, test, validate-json, security]
     runs-on: ubuntu-latest
     steps:
       - name: Require every check to pass
         env:
           SHELLCHECK: ${{ needs.shellcheck.result }}
+          ACTIONLINT: ${{ needs.actionlint.result }}
+          MARKDOWNLINT: ${{ needs.markdownlint.result }}
           TEST: ${{ needs.test.result }}
           JSON: ${{ needs.validate-json.result }}
           SECURITY: ${{ needs.security.result }}
         run: |
           set -euo pipefail
           failed=0
-          for result in "$SHELLCHECK" "$TEST" "$JSON" "$SECURITY"; do
+          for result in "$SHELLCHECK" "$ACTIONLINT" "$MARKDOWNLINT" "$TEST" "$JSON" "$SECURITY"; do
             if [ "$result" != "success" ]; then
               failed=1
             fi

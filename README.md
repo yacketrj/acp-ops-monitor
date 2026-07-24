@@ -57,12 +57,12 @@ printed line into `crontab -e` yourself after reviewing it.
 Runs hourly. `install.sh` prints the exact line for your machine; it looks
 like:
 
-```
+```crontab
 DISCORD_DEV_WEBHOOK_URL=https://discord.com/api/webhooks/REDACTED
 0 * * * * bash ~/acp-ops-monitor/check-upstream-prs.sh >> /tmp/acp-cron.log 2>&1; bash ~/acp-ops-monitor/validate-and-report.sh >> /tmp/acp-cron.log 2>&1
 ```
 
-## Testing
+## Testing & Linting
 
 Shell logic that decides whether to run a destructive git operation
 (`git reset --hard` + force-push) is extracted into `lib/sync-direction.sh`
@@ -73,7 +73,25 @@ sudo apt-get install -y bats   # or: brew install bats-core
 bats tests/
 ```
 
-CI runs this suite automatically on every push/PR (see `.github/workflows/ci.yml`).
+Shell scripts are linted with [ShellCheck](https://www.shellcheck.net/),
+GitHub Actions workflows are linted with
+[actionlint](https://github.com/rhysd/actionlint), and markdown docs are
+linted with
+[markdownlint-cli2](https://github.com/DavidAnson/markdownlint-cli2)
+(config: `.markdownlint-cli2.jsonc` — line-length and table-pipe-spacing
+rules are intentionally disabled since this repo's docs use long descriptive
+prose rather than hard-wrapped columns; everything else, including
+fenced-code-language and blanks-around-fences checks, stays enforced):
+
+```bash
+shellcheck *.sh lib/*.sh
+actionlint .github/workflows/*.yml
+npx --yes markdownlint-cli2@0.23.1 "**/*.md"
+```
+
+CI runs the full test and lint suite automatically on every push/PR (see
+`.github/workflows/ci.yml`); `.pre-commit-config.yaml` runs the same checks
+locally for parity.
 
 ## Incident History
 

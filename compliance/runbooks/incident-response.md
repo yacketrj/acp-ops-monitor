@@ -32,12 +32,14 @@ a documented response procedure, not just a documented postmortem.
    still reachable (e.g. via `git reflog`, or because the PR's merge commit
    still exists on GitHub even though the local branch pointer moved), fast
    forward `origin/main` back to include them:
+
    ```bash
    git fetch origin
    git checkout main
    git merge --ff-only <last-known-good-sha>
    git push origin main --force-with-lease
    ```
+
    Never use `--force` without `--with-lease` during recovery — a second
    automated or manual push racing with your recovery could otherwise
    compound the damage.
