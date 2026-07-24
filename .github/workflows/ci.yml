@@ -65,9 +65,16 @@ jobs:
         # .pre-commit-config.yaml already runs this exact CLI invocation
         # locally, so CI and local pre-commit now enforce identical rules
         # instead of two different mechanisms silently drifting apart.
+        #
+        # p/bash is intentionally NOT included: it has been removed from
+        # Semgrep's public registry (verified 2026-07-24 -- `semgrep scan
+        # --config p/bash` returns a 404 from https://semgrep.dev/c/p/bash,
+        # and it no longer appears in the registry's ruleset listing at
+        # all). Shell-script-specific static analysis is covered by the
+        # separate ShellCheck job in this same workflow instead.
         run: |
           pip install --quiet semgrep
-          semgrep scan --config p/security-audit --config p/secrets --config p/bash --error
+          semgrep scan --config p/security-audit --config p/secrets --error
       - name: Run trivy
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
