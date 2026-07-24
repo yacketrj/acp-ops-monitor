@@ -28,15 +28,28 @@ if [ -z "$EVENT" ] || [ -z "$TITLE" ]; then
   exit 1
 fi
 
-case "$EVENT" in
-  branch-created)      COLOR="5814783"  ;; # purple
-  pr-created)          COLOR="3447003"  ;; # blue
-  pr-merged)           COLOR="3066993"  ;; # green
-  upstream-pr-created) COLOR="15105570" ;; # orange
-  upstream-pr-merged)  COLOR="3066993"  ;; # green
-  deploy)              COLOR="10181046" ;; # red
-  *)                   COLOR="${5:-0}"   ;;
-esac
+# BUG FIX (2026-07-24): this case statement previously *unconditionally*
+# overwrote COLOR based on $EVENT, even when the caller passed an explicit
+# color argument. Every call site that used the generic "deploy" event
+# (validate-and-report.sh's success/resolved/issue notifications) passed a
+# distinct color per outcome (green for all-clear, red for issues) — but
+# because "deploy" was hardcoded to red in this table, every single one of
+# those notifications rendered red in Discord regardless of actual outcome,
+# making it impossible to visually distinguish "all clear" from "issues
+# found" without opening the message. Fixed by only applying a default
+# color here when the caller did NOT pass one explicitly — an explicit
+# color argument must always win over the event-name default.
+if [ -z "$COLOR" ]; then
+  case "$EVENT" in
+    branch-created)      COLOR="5814783"  ;; # purple
+    pr-created)          COLOR="3447003"  ;; # blue
+    pr-merged)           COLOR="3066993"  ;; # green
+    upstream-pr-created) COLOR="15105570" ;; # orange
+    upstream-pr-merged)  COLOR="3066993"  ;; # green
+    deploy)              COLOR="10181046" ;; # red (default only if caller omitted color)
+    *)                   COLOR="0"        ;;
+  esac
+fi
 
 # Convert literal \n in description to actual newlines
 DESC=$(printf '%b' "$DESC")

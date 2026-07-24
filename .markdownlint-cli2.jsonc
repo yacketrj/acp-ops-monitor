@@ -1,0 +1,24 @@
+{
+  // Rule tuning rationale: this repo's markdown docs use long, dense
+  // descriptive prose (see compliance/policies/, docs/security-checklist.md)
+  // rather than hard-wrapped 80-column text -- that's a deliberate style
+  // choice already in place across every doc in this repo, not an oversight.
+  // Enforcing MD013 (line-length) here would require rewrapping 15+ existing
+  // files against a convention nobody has followed, for no correctness
+  // benefit (long lines render identically in every markdown renderer).
+  // MD060 (table-column-style) is pure cosmetic pipe-spacing preference
+  // with zero effect on rendered output -- disabled for the same reason.
+  //
+  // Everything else stays enabled: fenced-code-language (MD040) and
+  // blanks-around-fences (MD031) catch real authoring mistakes (a code
+  // block with no syntax highlighting hint, or a fence butted up against
+  // prose) that this linter caught for real on 2026-07-24 in README.md and
+  // compliance/runbooks/incident-response.md.
+  "config": {
+    "default": true,
+    "MD013": false,
+    "MD060": false
+  },
+  "globs": ["**/*.md"],
+  "ignores": ["**/node_modules/**"]
+}

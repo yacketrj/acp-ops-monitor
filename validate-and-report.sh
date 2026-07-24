@@ -6,9 +6,13 @@
 
 set -euo pipefail
 
-NOTIFY="${HOME}/.local/bin/notify-discord.sh"
-CORE_DIR="${HOME}/dune-awakening-selfhost-docker"
-CATALOG_DIR="${HOME}/dune-docker-addon/dune-docker-addons"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/sync-direction.sh
+source "${SCRIPT_DIR}/lib/sync-direction.sh"
+
+NOTIFY="${ACP_NOTIFY_BIN:-${HOME}/.local/bin/notify-discord.sh}"
+CORE_DIR="${ACP_CORE_DIR:-${HOME}/dune-awakening-selfhost-docker}"
+CATALOG_DIR="${ACP_CATALOG_DIR:-${HOME}/dune-docker-addon/dune-docker-addons}"
 TODAY="$(date +%Y-%m-%d)"
 ISSUES=0
 ACTIVITY=0
@@ -25,26 +29,15 @@ git fetch upstream main --quiet 2>/dev/null || true
 git fetch origin --quiet 2>/dev/null || true
 
 UPSTREAM=$(git rev-parse upstream/main)
-ORIGIN_MAIN=$(git rev-parse origin/main 2>/dev/null || echo "")
 
-# BUG FIX (2026-07-23): the original unconditional
-# `if [ "$UPSTREAM" != "$ORIGIN_MAIN" ]` below does not check *direction* —
-# it fires identically whether origin/main is genuinely behind upstream, OR
-# origin/main is AHEAD (has fork-local merged work upstream doesn't have
-# yet), OR the two have diverged. Combined with the unconditional
-# `git reset --hard upstream/main` + force-push a few lines down, this
-# silently destroyed three merged PRs on this fork's main in a single day
-# (#103, #104, #108) — each time a PR merged into origin/main, the very
-# next hourly run saw a SHA mismatch and reset origin/main straight back to
-# upstream/main, discarding the merge with no warning. Fast-forwarding a
-# genuinely-behind fork is safe; resetting an ahead-or-diverged fork is
-# not. Only treat this as a sync-needed case when upstream/main is NOT
-# already reachable from origin/main's history AND origin/main has no
-# commits of its own that upstream/main lacks (i.e. origin/main is a pure
-# ancestor of upstream/main — the fork is strictly, only behind).
+# See lib/sync-direction.sh for the full incident history (three destructive
+# `git reset --hard` events against merged work on 2026-07-22) and
+# tests/sync-direction.bats for regression coverage of this exact decision.
 AHEAD_OF_UPSTREAM=$(git rev-list upstream/main..origin/main --count 2>/dev/null || echo "0")
-if [ "$UPSTREAM" != "$ORIGIN_MAIN" ] && [ "$AHEAD_OF_UPSTREAM" = "0" ]; then
-  BEHIND=$(git rev-list origin/main..upstream/main --count 2>/dev/null || echo "?")
+BEHIND=$(git rev-list origin/main..upstream/main --count 2>/dev/null || echo "0")
+SYNC_STATUS="$(sync_decision "$AHEAD_OF_UPSTREAM" "$BEHIND")"
+
+if [ "$SYNC_STATUS" = "sync" ]; then
   echo "  SYNC: core fork $BEHIND commits behind — syncing main..."
 
   # Save current branch and working tree
@@ -59,7 +52,7 @@ if [ "$UPSTREAM" != "$ORIGIN_MAIN" ] && [ "$AHEAD_OF_UPSTREAM" = "0" ]; then
   git reset --hard upstream/main 2>/dev/null
   git push origin main --force-with-lease --no-verify 2>&1 | tail -1
 
-  echo -e "  ${GREEN}OK:${NC} main synced with upstream ($(echo $UPSTREAM | cut -c1-7))"
+  echo -e "  ${GREEN}OK:${NC} main synced with upstream ($(echo "$UPSTREAM" | cut -c1-7))"
 
   # ─── Sync integration/discord with upstream/main using merge ───
   echo -n "  integration/discord: "
@@ -165,15 +158,16 @@ if [ "$UPSTREAM" != "$ORIGIN_MAIN" ] && [ "$AHEAD_OF_UPSTREAM" = "0" ]; then
   elif [ "$CURRENT_BRANCH" != "main" ]; then
     git checkout "$CURRENT_BRANCH" 2>/dev/null || git checkout integration/discord 2>/dev/null || true
   fi
-elif [ "$UPSTREAM" != "$ORIGIN_MAIN" ]; then
+elif [ "$SYNC_STATUS" = "diverged" ]; then
   # origin/main is AHEAD of or has DIVERGED from upstream/main (has
   # fork-local merged work upstream doesn't have) — this is expected and
-  # healthy, NOT an error condition, and must never trigger a reset. See
-  # the BUG FIX comment above for why this branch exists as its own case
-  # rather than falling through to the reset logic.
+  # healthy, NOT an error condition, and must never trigger a reset. This
+  # is the exact case that caused the 2026-07-22 incidents when the old
+  # logic didn't distinguish it from "genuinely behind" — see
+  # lib/sync-direction.sh and tests/sync-direction.bats.
   echo -e "  ${GREEN}OK:${NC} core fork main is ahead of/diverged from upstream by design (local merges not yet upstreamed) — not syncing"
 else
-  echo -e "  ${GREEN}OK:${NC} core fork synced ($(echo $UPSTREAM | cut -c1-7))"
+  echo -e "  ${GREEN}OK:${NC} core fork synced ($(echo "$UPSTREAM" | cut -c1-7))"
 fi
 
 # ─── 2. Catalog fork sync ───
@@ -184,21 +178,25 @@ if [ -d "$CATALOG_DIR" ]; then
   git fetch origin main --quiet 2>/dev/null || true
   CAT_UP=$(git rev-parse upstream/main 2>/dev/null || echo "")
   CAT_OR=$(git rev-parse origin/main 2>/dev/null || echo "")
-  # Same direction-blind bug as the core fork sync above — fixed the same
-  # way: only reset when origin/main is a strict, pure ancestor of
-  # upstream/main (genuinely behind, nothing of its own to lose).
-  CAT_AHEAD=$(git rev-list upstream/main..origin/main --count 2>/dev/null || echo "0")
-  if [ -n "$CAT_UP" ] && [ -n "$CAT_OR" ] && [ "$CAT_UP" != "$CAT_OR" ] && [ "$CAT_AHEAD" = "0" ]; then
-    BEHIND=$(git rev-list origin/main..upstream/main --count 2>/dev/null || echo "?")
-    echo "  SYNC: catalog fork $BEHIND commits behind — syncing..."
-    git checkout main 2>/dev/null || true
-    git reset --hard upstream/main 2>/dev/null
-    git push origin main --force-with-lease --no-verify 2>&1 | tail -1
-    echo -e "  ${GREEN}OK:${NC} catalog synced"
-  elif [ -n "$CAT_UP" ] && [ -n "$CAT_OR" ] && [ "$CAT_UP" != "$CAT_OR" ]; then
-    echo -e "  ${GREEN}OK:${NC} catalog fork main is ahead of/diverged from upstream by design — not syncing"
+  # Uses the same shared, unit-tested decision function as the core fork
+  # sync above — see lib/sync-direction.sh and tests/sync-direction.bats.
+  if [ -n "$CAT_UP" ] && [ -n "$CAT_OR" ]; then
+    CAT_AHEAD=$(git rev-list upstream/main..origin/main --count 2>/dev/null || echo "0")
+    CAT_BEHIND=$(git rev-list origin/main..upstream/main --count 2>/dev/null || echo "0")
+    CAT_SYNC_STATUS="$(sync_decision "$CAT_AHEAD" "$CAT_BEHIND")"
+    if [ "$CAT_SYNC_STATUS" = "sync" ]; then
+      echo "  SYNC: catalog fork $CAT_BEHIND commits behind — syncing..."
+      git checkout main 2>/dev/null || true
+      git reset --hard upstream/main 2>/dev/null
+      git push origin main --force-with-lease --no-verify 2>&1 | tail -1
+      echo -e "  ${GREEN}OK:${NC} catalog synced"
+    elif [ "$CAT_SYNC_STATUS" = "diverged" ]; then
+      echo -e "  ${GREEN}OK:${NC} catalog fork main is ahead of/diverged from upstream by design — not syncing"
+    else
+      echo -e "  ${GREEN}OK:${NC} catalog fork synced"
+    fi
   else
-    echo -e "  ${GREEN}OK:${NC} catalog fork synced"
+    echo -e "  ${YELLOW}SKIP:${NC} catalog fork remotes not configured"
   fi
 else
   echo "  SKIP: catalog dir not found"
