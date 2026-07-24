@@ -32,14 +32,25 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Download actionlint (pinned version, checksum-verified release binary)
+        # BUG FIX (2026-07-24): the first version of this step downloaded the
+        # release tarball with `-o actionlint.tar.gz`, renaming it away from
+        # its original filename -- but actionlint_1.7.12_checksums.txt's
+        # entries are keyed by the ORIGINAL filename
+        # (actionlint_1.7.12_linux_amd64.tar.gz), so `sha256sum -c -` could
+        # never find a file with that name and failed every run
+        # unconditionally. This passed local testing because the local
+        # verification (done manually, not via this exact script) happened
+        # to download the file under its original name. Fixed by not
+        # renaming the download -- keep the original filename throughout so
+        # the checksum file's entries resolve correctly.
         run: |
           set -euo pipefail
-          curl -fsSL -o actionlint.tar.gz \
+          curl -fsSL -O \
             "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz"
-          curl -fsSL -o actionlint_checksums.txt \
+          curl -fsSL -O \
             "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_checksums.txt"
-          grep "actionlint_1.7.12_linux_amd64.tar.gz" actionlint_checksums.txt | sha256sum -c -
-          tar -xzf actionlint.tar.gz actionlint
+          grep "actionlint_1.7.12_linux_amd64.tar.gz" actionlint_1.7.12_checksums.txt | sha256sum -c -
+          tar -xzf actionlint_1.7.12_linux_amd64.tar.gz actionlint
           chmod +x actionlint
       - name: Run actionlint
         run: ./actionlint -color
