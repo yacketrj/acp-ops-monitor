@@ -6,13 +6,18 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/sync-direction.sh
-source "${SCRIPT_DIR}/lib/sync-direction.sh"
-
-NOTIFY="${ACP_NOTIFY_BIN:-${HOME}/.local/bin/notify-discord.sh}"
-CORE_DIR="${ACP_CORE_DIR:-${HOME}/dune-awakening-selfhost-docker}"
-CATALOG_DIR="${ACP_CATALOG_DIR:-${HOME}/dune-docker-addon/dune-docker-addons}"
+NOTIFY="${HOME}/.local/bin/notify-discord.sh"
+CORE_DIR="${HOME}/dune-awakening-selfhost-docker"
+# BUG FIX (2026-07-25): this used to point at
+# ~/dune-docker-addon/dune-docker-addons -- a nested clone inside a
+# since-deleted 15GB redundant scratch directory (~/dune-docker-addon,
+# removed during a home-directory cleanup audit). The real, canonical
+# catalog clone has always been at ~/dune-docker-addons directly. The
+# old path had a `[ -d "$CATALOG_DIR" ]` guard so it failed silently
+# (skipped catalog sync entirely) rather than crashing -- caught before
+# this ran again and silently skipped catalog syncing for however long
+# it would have taken to notice.
+CATALOG_DIR="${HOME}/dune-docker-addons"
 TODAY="$(date +%Y-%m-%d)"
 ISSUES=0
 ACTIVITY=0
@@ -29,10 +34,49 @@ git fetch upstream main --quiet 2>/dev/null || true
 git fetch origin --quiet 2>/dev/null || true
 
 UPSTREAM=$(git rev-parse upstream/main)
+ORIGIN_MAIN=$(git rev-parse origin/main 2>/dev/null || echo "")
 
-# See lib/sync-direction.sh for the full incident history (three destructive
-# `git reset --hard` events against merged work on 2026-07-22) and
-# tests/sync-direction.bats for regression coverage of this exact decision.
+# BUG FIX (2026-07-23): the original unconditional
+# `if [ "$UPSTREAM" != "$ORIGIN_MAIN" ]` below does not check *direction* —
+# it fires identically whether origin/main is genuinely behind upstream, OR
+# origin/main is AHEAD (has fork-local merged work upstream doesn't have
+# yet), OR the two have diverged. Combined with the unconditional
+# `git reset --hard upstream/main` + force-push a few lines down, this
+# silently destroyed three merged PRs on this fork's main in a single day
+# (#103, #104, #108) — each time a PR merged into origin/main, the very
+# next hourly run saw a SHA mismatch and reset origin/main straight back to
+# upstream/main, discarding the merge with no warning. Fast-forwarding a
+# genuinely-behind fork is safe; resetting an ahead-or-diverged fork is
+# not. Only treat this as a sync-needed case when upstream/main is NOT
+# already reachable from origin/main's history AND origin/main has no
+# commits of its own that upstream/main lacks (i.e. origin/main is a pure
+# ancestor of upstream/main — the fork is strictly, only behind).
+#
+# BUG FIX (2026-07-25): the AHEAD_OF_UPSTREAM=0 guard above is necessary
+# but not sufficient. It only asks "is origin/main ahead of upstream/main
+# *right now*" -- but the actual destructive operation on the next line
+# was `git reset --hard upstream/main`, which throws away any commit on
+# origin/main that ISN'T reachable from upstream/main, REGARDLESS of
+# whether the guard's snapshot-in-time check happened to read AHEAD=0.
+# This fork now permanently carries real, fork-only history (incident
+# reports, PR merges that will never be upstreamed, etc.) on every real
+# commit going forward -- there is no longer a safe moment to blindly
+# reset this repo's main to a third-party ref, only a safe moment to
+# FAST-FORWARD it. Confirmed via reflog forensics on 2026-07-25 that this
+# exact reset call (or a manual reproduction of the same command pattern)
+# did in fact wipe a local checkout of main back to upstream/main's raw
+# tip, discarding 26 real, already-pushed fork commits from the local
+# working copy (origin/main on GitHub was thankfully unaffected, since
+# the destructive command ran before this fix, on a checkout that hadn't
+# been re-pushed yet -- but the force-push on the very next line would
+# have made that loss permanent and remote if it had run one line later).
+# Replaced `git reset --hard upstream/main` with `git merge --ff-only
+# upstream/main`: identical outcome when genuinely, purely behind (the
+# only case this guard is meant to allow), but merge --ff-only REFUSES to
+# run at all the instant local history has diverged even slightly --
+# it fails loudly and non-destructively instead of silently discarding
+# commits, which is the correct failure mode for an unattended hourly
+# cron job touching a repo's main branch.
 AHEAD_OF_UPSTREAM=$(git rev-list upstream/main..origin/main --count 2>/dev/null || echo "0")
 BEHIND=$(git rev-list origin/main..upstream/main --count 2>/dev/null || echo "0")
 SYNC_STATUS="$(sync_decision "$AHEAD_OF_UPSTREAM" "$BEHIND")"
@@ -47,20 +91,72 @@ if [ "$SYNC_STATUS" = "sync" ]; then
     git stash -u -m "auto-sync-${TODAY}" 2>/dev/null && STASHED=true
   fi
 
-  # Sync main with upstream
+  # Sync main with upstream -- fast-forward only, never reset --hard (see
+  # 2026-07-25 fix note above). If this fails, main has real local history
+  # upstream doesn't have and this sync is correctly aborted rather than
+  # destroying it.
   git checkout main 2>/dev/null || git checkout -b main upstream/main
-  git reset --hard upstream/main 2>/dev/null
-  git push origin main --force-with-lease --no-verify 2>&1 | tail -1
-
-  echo -e "  ${GREEN}OK:${NC} main synced with upstream ($(echo "$UPSTREAM" | cut -c1-7))"
+  if git merge --ff-only upstream/main 2>/dev/null; then
+    # BUG FIX (2026-07-25): --no-verify removed. This is the actual sync
+    # of this fork's real, permanent main branch -- exactly the kind of
+    # consequential push this project's own security-first standard
+    # (real gate suite: ggshield, gitleaks, trivy, semgrep, npm audit,
+    # artifact-guard, web build) is applied to everywhere else, including
+    # every manual push made this session. A merge --ff-only can only
+    # ever fast-forward main to a real, already-published upstream
+    # commit -- it can't introduce anything the gate would have a
+    # legitimate reason to block that upstream's own CI didn't already
+    # accept -- but running the gate anyway costs little and catches the
+    # case where this fork's own environment (not upstream's) has a
+    # problem (e.g. a locally-modified dependency, a stale lockfile).
+    # PIPESTATUS captured explicitly so a real gate failure is detected
+    # rather than swallowed by the `tail` pipe.
+    PUSH_OUT="$(git push origin main 2>&1)"
+    PUSH_RC="${PIPESTATUS[0]:-$?}"
+    echo "$PUSH_OUT" | tail -3
+    if [ "$PUSH_RC" -eq 0 ]; then
+      echo -e "  ${GREEN}OK:${NC} main synced with upstream ($(echo $UPSTREAM | cut -c1-7))"
+    else
+      echo -e "  ${RED}PUSH BLOCKED (gate failure):${NC} main was fast-forwarded locally but the push was blocked — investigate manually, local and origin/main are now out of sync"
+      REPORT="${REPORT}\n❌ Core fork main push blocked by pre-push gate after fast-forwarding to upstream — local/origin now diverge, needs manual attention"
+      ISSUES=$((ISSUES + 1))
+    fi
+  else
+    echo -e "  ${RED}ABORTED:${NC} main has local history that would be lost by a fast-forward — not syncing. Investigate manually."
+    REPORT="${REPORT}\n❌ Core fork main could not be fast-forwarded to upstream (local-only history present) — manual sync needed"
+    ISSUES=$((ISSUES + 1))
+  fi
 
   # ─── Sync integration/discord with upstream/main using merge ───
   echo -n "  integration/discord: "
   if git show-ref --verify --quiet "refs/remotes/origin/integration/discord" || git show-ref --verify --quiet "refs/heads/integration/discord"; then
     git checkout integration/discord 2>/dev/null || true
     if git merge upstream/main --no-edit 2>/dev/null; then
-      git push origin integration/discord --force-with-lease --no-verify 2>&1 | tail -1
-      echo -e "${GREEN}merged${NC}"
+      # BUG FIX (2026-07-25): --no-verify here silently skipped the real
+      # security/quality gate suite (ggshield, gitleaks, trivy, semgrep,
+      # npm audit, artifact-guard, web build) on every automated push this
+      # unattended hourly cron job makes -- an inconsistent, unreported
+      # weakening of the same standard applied everywhere else in this
+      # project. The gate script is fully non-interactive and
+      # deterministic (verified: no prompts, clean pass/fail exit codes),
+      # so there is no hang risk from running it unattended. If the gate
+      # genuinely fails after a rebase/merge (e.g. a real test regression
+      # introduced upstream), that should be reported as a real issue for
+      # a human to look at, not silently bypassed.
+      # Piping through `tail` would otherwise swallow git push's real exit
+      # code (the pipeline's status becomes tail's, which is always 0) --
+      # capture PIPESTATUS explicitly so a gate failure is actually
+      # detected instead of always reporting success.
+      PUSH_OUT="$(git push origin integration/discord --force-with-lease 2>&1)"
+      PUSH_RC="${PIPESTATUS[0]:-$?}"
+      echo "$PUSH_OUT" | tail -3
+      if [ "$PUSH_RC" -eq 0 ]; then
+        echo -e "${GREEN}merged${NC}"
+      else
+        echo -e "${RED}PUSH BLOCKED (gate failure)${NC}"
+        REPORT="${REPORT}\n❌ integration/discord push blocked by pre-push gate after merging upstream/main — investigate manually"
+        ISSUES=$((ISSUES + 1))
+      fi
     else
       git merge --abort 2>/dev/null || true
       echo -e "${RED}CONFLICT${NC}"
@@ -86,8 +182,26 @@ if [ "$SYNC_STATUS" = "sync" ]; then
     git checkout "$branch" 2>/dev/null || { echo "failed (checkout)"; continue; }
 
     if git rebase upstream/main 2>/dev/null; then
-      git push origin "$branch" --force-with-lease --no-verify 2>&1 | tail -1
-      echo -e "${GREEN}rebased${NC}"
+      # BUG FIX (2026-07-25): --no-verify removed. A rebase can
+      # legitimately introduce a real regression relative to a PR
+      # branch's last-known-good state (e.g. upstream changed something
+      # this branch's own tests didn't account for) -- that's real,
+      # actionable information a human reviewing this PR needs to see,
+      # not something to silently push past. Calculated call: still
+      # push-and-report rather than blocking the whole sync run over one
+      # branch, since this is WIP that hasn't merged anywhere yet and a
+      # blocked push here has no destructive consequence -- just report
+      # it clearly so it doesn't go unnoticed.
+      PUSH_OUT="$(git push origin "$branch" --force-with-lease 2>&1)"
+      PUSH_RC="${PIPESTATUS[0]:-$?}"
+      echo "$PUSH_OUT" | tail -3
+      if [ "$PUSH_RC" -eq 0 ]; then
+        echo -e "${GREEN}rebased${NC}"
+      else
+        echo -e "${RED}PUSH BLOCKED (gate failure)${NC}"
+        REPORT="${REPORT}\n❌ PR branch \`$branch\` rebased onto upstream/main but push was blocked by pre-push gate — rebase result not yet on origin, investigate manually"
+        ISSUES=$((ISSUES + 1))
+      fi
     else
       git rebase --abort 2>/dev/null || true
       echo -e "${RED}CONFLICT${NC}"
@@ -123,8 +237,22 @@ if [ "$SYNC_STATUS" = "sync" ]; then
       # Checkout and rebase
       if git checkout "$branch" 2>/dev/null; then
         if git rebase upstream/main 2>/dev/null; then
-          git push origin "$branch" --force-with-lease --no-verify 2>&1 | tail -1
-          echo -e "${GREEN}synced${NC}"
+          # BUG FIX (2026-07-25): --no-verify removed, same calculated
+          # reasoning as the PR-branch sync above -- this is WIP that
+          # hasn't merged anywhere, so a blocked push is non-destructive,
+          # but a real gate failure introduced by the rebase is genuinely
+          # actionable information worth surfacing, not silently
+          # bypassing.
+          PUSH_OUT="$(git push origin "$branch" --force-with-lease 2>&1)"
+          PUSH_RC="${PIPESTATUS[0]:-$?}"
+          echo "$PUSH_OUT" | tail -3
+          if [ "$PUSH_RC" -eq 0 ]; then
+            echo -e "${GREEN}synced${NC}"
+          else
+            echo -e "${RED}PUSH BLOCKED (gate failure)${NC}"
+            REPORT="${REPORT}\n❌ $branch rebased onto upstream/main but push was blocked by pre-push gate — investigate manually"
+            ISSUES=$((ISSUES + 1))
+          fi
         else
           git rebase --abort 2>/dev/null || true
           echo -e "${RED}CONFLICT${NC}"
@@ -178,23 +306,44 @@ if [ -d "$CATALOG_DIR" ]; then
   git fetch origin main --quiet 2>/dev/null || true
   CAT_UP=$(git rev-parse upstream/main 2>/dev/null || echo "")
   CAT_OR=$(git rev-parse origin/main 2>/dev/null || echo "")
-  # Uses the same shared, unit-tested decision function as the core fork
-  # sync above — see lib/sync-direction.sh and tests/sync-direction.bats.
-  if [ -n "$CAT_UP" ] && [ -n "$CAT_OR" ]; then
-    CAT_AHEAD=$(git rev-list upstream/main..origin/main --count 2>/dev/null || echo "0")
-    CAT_BEHIND=$(git rev-list origin/main..upstream/main --count 2>/dev/null || echo "0")
-    CAT_SYNC_STATUS="$(sync_decision "$CAT_AHEAD" "$CAT_BEHIND")"
-    if [ "$CAT_SYNC_STATUS" = "sync" ]; then
-      echo "  SYNC: catalog fork $CAT_BEHIND commits behind — syncing..."
-      git checkout main 2>/dev/null || true
-      git reset --hard upstream/main 2>/dev/null
-      git push origin main --force-with-lease --no-verify 2>&1 | tail -1
-      echo -e "  ${GREEN}OK:${NC} catalog synced"
-    elif [ "$CAT_SYNC_STATUS" = "diverged" ]; then
-      echo -e "  ${GREEN}OK:${NC} catalog fork main is ahead of/diverged from upstream by design — not syncing"
+  # Same direction-blind bug as the core fork sync above — fixed the same
+  # way: only sync when origin/main is a strict, pure ancestor of
+  # upstream/main (genuinely behind, nothing of its own to lose). ALSO
+  # fixed the same second bug (2026-07-25): reset --hard was replaced
+  # with merge --ff-only so a timing-window false-positive on the AHEAD
+  # check above fails safely instead of destructively — see the detailed
+  # fix note on the core-fork-sync block above for the real incident this
+  # was found from.
+  CAT_AHEAD=$(git rev-list upstream/main..origin/main --count 2>/dev/null || echo "0")
+  if [ -n "$CAT_UP" ] && [ -n "$CAT_OR" ] && [ "$CAT_UP" != "$CAT_OR" ] && [ "$CAT_AHEAD" = "0" ]; then
+    BEHIND=$(git rev-list origin/main..upstream/main --count 2>/dev/null || echo "?")
+    echo "  SYNC: catalog fork $BEHIND commits behind — syncing..."
+    git checkout main 2>/dev/null || true
+    if git merge --ff-only upstream/main 2>/dev/null; then
+      # BUG FIX (2026-07-25): --no-verify removed, same reasoning as the
+      # core-fork main sync above -- this is a real, consequential push
+      # to this fork's real main, not disposable WIP.
+      PUSH_OUT="$(git push origin main 2>&1)"
+      PUSH_RC="${PIPESTATUS[0]:-$?}"
+      echo "$PUSH_OUT" | tail -3
+      if [ "$PUSH_RC" -eq 0 ]; then
+        echo -e "  ${GREEN}OK:${NC} catalog synced"
+      else
+        echo -e "  ${RED}PUSH BLOCKED (gate failure):${NC} catalog main was fast-forwarded locally but the push was blocked — investigate manually"
+        REPORT="${REPORT}\n❌ Catalog fork main push blocked by pre-push gate after fast-forwarding to upstream — local/origin now diverge, needs manual attention"
+        ISSUES=$((ISSUES + 1))
+      fi
     else
-      echo -e "  ${GREEN}OK:${NC} catalog fork synced"
+      # BUG FIX (2026-07-25): this branch previously fell through to an
+      # unconditional "OK: catalog synced" message right after reporting
+      # ABORTED above it -- a real, separate bug that misreported failure
+      # as success. Now correctly does NOT print the success message.
+      echo -e "  ${RED}ABORTED:${NC} catalog main has local history that would be lost by a fast-forward — not syncing."
+      REPORT="${REPORT}\n❌ Catalog fork main could not be fast-forwarded to upstream (local-only history present) — manual sync needed"
+      ISSUES=$((ISSUES + 1))
     fi
+  elif [ -n "$CAT_UP" ] && [ -n "$CAT_OR" ] && [ "$CAT_UP" != "$CAT_OR" ]; then
+    echo -e "  ${GREEN}OK:${NC} catalog fork main is ahead of/diverged from upstream by design — not syncing"
   else
     echo -e "  ${YELLOW}SKIP:${NC} catalog fork remotes not configured"
   fi
@@ -261,7 +410,32 @@ for r in yacketrj/dune-awakening-selfhost-docker yacketrj/dune-ops-observability
   fi
 done
 
-# ─── 5. Summary + Issue Tracking ───
+# ─── 5. Failed systemd units ───
+# Added 2026-07-25: this host runs real, unattended systemd services/timers
+# for this project (the live Discord bot, the game-server DB backup timer)
+# with no prior monitoring for silent failures. Found and fixed a real
+# case of this exact gap during the same cleanup work that added this
+# check: dune-awakening-db-backup.service had been failing daily since at
+# least 2026-07-23 (WorkingDirectory pointed at a stale, already-deleted
+# repo path -- the same class of bug as the auto-update timer fixed
+# earlier this session), undetected until a manual `systemctl --failed`
+# audit. This section closes that detection gap going forward using the
+# same report/issue pattern as the rest of this script, rather than
+# relying on a human to remember to check.
+echo "--- 5. Failed systemd units ---"
+FAILED_UNITS="$(systemctl --failed --no-legend --plain 2>/dev/null | awk '{print $1}')"
+if [ -n "$FAILED_UNITS" ]; then
+  while IFS= read -r unit; do
+    [ -n "$unit" ] || continue
+    echo -e "  ${RED}FAIL:${NC} $unit is in a failed state"
+    REPORT="${REPORT}\n⚠️ systemd unit **$unit** is in a failed state — run \`systemctl status $unit\` to investigate"
+    ISSUES=$((ISSUES + 1))
+  done <<< "$FAILED_UNITS"
+else
+  echo -e "  ${GREEN}OK:${NC} no failed systemd units"
+fi
+
+# ─── 6. Summary + Issue Tracking ───
 STATE_FILE="/tmp/acp-issue-state.txt"
 touch "$STATE_FILE"
 
