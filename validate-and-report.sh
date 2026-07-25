@@ -446,7 +446,33 @@ else
   echo -e "  ${GREEN}OK:${NC} no failed systemd units"
 fi
 
-# ─── 6. Summary + Issue Tracking ───
+# ─── 6. Home directory structure ───
+# Added 2026-07-25: after a full home-directory reorganization (see
+# ~/archive/2026-07-25-reorg-notes.md), wired structure-lint into this
+# hourly run so structure drift (a repo moved/duplicated outside
+# ~/projects, a basename/slug mismatch, ~/tools falling off $PATH) is
+# caught automatically going forward instead of only being noticed
+# the next time someone happens to look.
+echo "--- 6. Home directory structure ---"
+STRUCTURE_LINT="${HOME}/tools/structure-lint"
+if [ -x "$STRUCTURE_LINT" ]; then
+  STRUCTURE_OUT="$("$STRUCTURE_LINT" 2>&1)"
+  STRUCTURE_RC=$?
+  if [ "$STRUCTURE_RC" -eq 0 ]; then
+    echo -e "  ${GREEN}OK:${NC} structure-lint passed"
+  else
+    echo -e "  ${RED}FAIL:${NC} structure-lint found $STRUCTURE_RC issue(s)"
+    echo "$STRUCTURE_OUT" | grep "FAIL:" | while IFS= read -r line; do
+      echo "  $line"
+    done
+    REPORT="${REPORT}\n⚠️ Home directory structure-lint found $STRUCTURE_RC issue(s) — run \`~/tools/structure-lint\` to investigate"
+    ISSUES=$((ISSUES + 1))
+  fi
+else
+  echo -e "  ${YELLOW}SKIP:${NC} ~/tools/structure-lint not found or not executable"
+fi
+
+# ─── 7. Summary + Issue Tracking ───
 STATE_FILE="/tmp/acp-issue-state.txt"
 touch "$STATE_FILE"
 
