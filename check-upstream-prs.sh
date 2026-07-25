@@ -157,7 +157,7 @@ check_repo "Red-Blink/dune-awakening-selfhost-docker" "Core"
 check_repo "Red-Blink/dune-docker-addons" "Catalog"
 echo
 check_repo "yacketrj/dune-ops-observability-addon" "Addon"
-check_repo "yacketrj/Arrakis-Control-Panel" "ACP"
+check_repo "yacketrj/arrakis-control-panel" "ACP"
 check_repo "yacketrj/acp-landing" "Landing"
 
 echo ""
@@ -174,7 +174,7 @@ echo "--- CI Status ---"
 check_ci "Red-Blink/dune-awakening-selfhost-docker" "Core"
 check_ci "yacketrj/dune-ops-observability-addon" "Addon"
 check_ci "yacketrj/dune-docker-addons" "Catalog"
-check_ci "yacketrj/Arrakis-Control-Panel" "ACP"
+check_ci "yacketrj/arrakis-control-panel" "ACP"
 check_ci "yacketrj/acp-landing" "Landing"
 
 echo "$NEW_STATE" > "$CACHE"

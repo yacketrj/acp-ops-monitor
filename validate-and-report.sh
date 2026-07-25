@@ -7,17 +7,10 @@
 set -euo pipefail
 
 NOTIFY="${HOME}/.local/bin/notify-discord.sh"
-CORE_DIR="${HOME}/dune-awakening-selfhost-docker"
-# BUG FIX (2026-07-25): this used to point at
-# ~/dune-docker-addon/dune-docker-addons -- a nested clone inside a
-# since-deleted 15GB redundant scratch directory (~/dune-docker-addon,
-# removed during a home-directory cleanup audit). The real, canonical
-# catalog clone has always been at ~/dune-docker-addons directly. The
-# old path had a `[ -d "$CATALOG_DIR" ]` guard so it failed silently
-# (skipped catalog sync entirely) rather than crashing -- caught before
-# this ran again and silently skipped catalog syncing for however long
-# it would have taken to notice.
-CATALOG_DIR="${HOME}/dune-docker-addons"
+# Updated 2026-07-25: repos moved under ~/projects/<workstream>/ as part
+# of a home-directory reorganization (basenames preserved).
+CORE_DIR="${HOME}/projects/dune/dune-awakening-selfhost-docker"
+CATALOG_DIR="${HOME}/projects/dune/dune-docker-addons"
 TODAY="$(date +%Y-%m-%d)"
 ISSUES=0
 ACTIVITY=0
@@ -398,7 +391,7 @@ done < <(gh pr list --repo Red-Blink/dune-awakening-selfhost-docker --author yac
 
 # ─── 4. CI failure check ───
 echo "--- 4. CI failures ---"
-for r in yacketrj/dune-awakening-selfhost-docker yacketrj/dune-ops-observability-addon yacketrj/dune-docker-addons yacketrj/Arrakis-Control-Panel yacketrj/acp-landing; do
+for r in yacketrj/dune-awakening-selfhost-docker yacketrj/dune-ops-observability-addon yacketrj/dune-docker-addons yacketrj/arrakis-control-panel yacketrj/acp-landing; do
   LATEST=$(gh run list --repo "$r" --branch main --limit 1 --json conclusion --jq '.[0].conclusion' 2>/dev/null || echo "")
   REPO_NAME=$(echo "$r" | cut -d'/' -f2)
   if [ "$LATEST" = "failure" ]; then
