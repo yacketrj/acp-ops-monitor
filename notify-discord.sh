@@ -6,7 +6,21 @@
 set -euo pipefail
 
 WEBHOOK_URL="${DISCORD_DEV_WEBHOOK_URL:-}"
-WEBHOOK_FILE="${HOME}/dune-docker-addon/e2e-integration/secrets/dev-webhook-url.txt"
+# BUG FIX (2026-07-25): this used to point at
+# ~/dune-docker-addon/e2e-integration/secrets/dev-webhook-url.txt -- a
+# path inside the 15GB redundant scratch directory (~/dune-docker-addon)
+# that was deleted during a home-directory cleanup audit, without
+# realizing the deployed copy of this script (~/.local/bin/notify-discord.sh,
+# the one actually invoked by validate-and-report.sh's $NOTIFY) depended
+# on a secret file living inside it. The actual webhook URL value was not
+# recoverable from anything left on disk after the deletion --
+# notifications have been silently broken (this script fails open with
+# exit 0, by design, rather than crashing callers) since.
+# Moved the expected path to a stable, non-project location that won't
+# be at risk from future repository/workspace cleanups. A new webhook
+# URL still needs to be generated and placed at this path (or exported
+# as DISCORD_DEV_WEBHOOK_URL) before notifications will resume.
+WEBHOOK_FILE="${HOME}/.config/acp-ops-monitor/dev-webhook-url.txt"
 
 if [ -z "$WEBHOOK_URL" ] && [ -f "$WEBHOOK_FILE" ]; then
   WEBHOOK_URL="$(tr -d '\r\n' < "$WEBHOOK_FILE")"
