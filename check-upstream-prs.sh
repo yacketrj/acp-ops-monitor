@@ -177,7 +177,33 @@ check_ci "yacketrj/dune-docker-addons" "Catalog"
 check_ci "yacketrj/arrakis-control-panel" "ACP"
 check_ci "yacketrj/acp-landing" "Landing"
 
-echo "$NEW_STATE" > "$CACHE"
+# BUG FIX (2026-07-25): NEW_STATE is a bash associative array
+# (declare -A), not a scalar string -- `echo "$NEW_STATE"` under
+# `set -u` throws "NEW_STATE: unbound variable" (bash treats bare
+# array expansion without an index as referencing the unset [0]
+# element in this context) and would have written the literal word
+# "NEW_STATE" to the cache file even if it hadn't errored. Serialize it
+# to JSON (tab-separated key/value pairs piped to python3, mirroring
+# how OLD_STATE_JSON is parsed back into OLD_STATE above) instead of
+# trying to echo the array directly.
+NEW_STATE_JSON="$(
+  {
+    for key in "${!NEW_STATE[@]}"; do
+      printf '%s\t%s\n' "$key" "${NEW_STATE[$key]}"
+    done
+  } | python3 -c "
+import sys, json
+d = {}
+for line in sys.stdin:
+    line = line.rstrip('\n')
+    if not line:
+        continue
+    k, _, v = line.partition('\t')
+    d[k] = v
+print(json.dumps(d))
+"
+)"
+echo "$NEW_STATE_JSON" > "$CACHE"
 echo "$NEW_RELEASE_STATE" > "$RELEASE_CACHE"
 
 if [ "$ISSUES" -gt 0 ]; then

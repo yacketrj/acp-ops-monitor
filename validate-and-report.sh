@@ -6,6 +6,17 @@
 
 set -euo pipefail
 
+# BUG FIX (2026-07-25): sync_decision() (used below to safely gate the
+# fork-sync fast-forward) was extracted into lib/sync-direction.sh with
+# real unit test coverage, but this script never actually sourced that
+# file -- every invocation failed immediately with
+# "sync_decision: command not found" the moment it reached the first
+# call site. Found while rebasing an unrelated path-fix commit onto
+# this change and running the script to verify.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/sync-direction.sh
+source "$SCRIPT_DIR/lib/sync-direction.sh"
+
 NOTIFY="${HOME}/.local/bin/notify-discord.sh"
 # Updated 2026-07-25: repos moved under ~/projects/<workstream>/ as part
 # of a home-directory reorganization (basenames preserved).
@@ -337,6 +348,13 @@ if [ -d "$CATALOG_DIR" ]; then
     fi
   elif [ -n "$CAT_UP" ] && [ -n "$CAT_OR" ] && [ "$CAT_UP" != "$CAT_OR" ]; then
     echo -e "  ${GREEN}OK:${NC} catalog fork main is ahead of/diverged from upstream by design — not syncing"
+  elif [ -n "$CAT_UP" ] && [ -n "$CAT_OR" ] && [ "$CAT_UP" = "$CAT_OR" ]; then
+    # BUG FIX (2026-07-25): this case (both refs resolved and already
+    # equal, i.e. genuinely fully synced) previously fell through to the
+    # generic "remotes not configured" message below, which is
+    # misleading -- upstream and origin were both reachable and
+    # identical, not unconfigured.
+    echo -e "  ${GREEN}OK:${NC} catalog fork already synced ($(echo "$CAT_UP" | cut -c1-7))"
   else
     echo -e "  ${YELLOW}SKIP:${NC} catalog fork remotes not configured"
   fi
