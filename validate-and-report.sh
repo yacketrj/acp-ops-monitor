@@ -38,7 +38,6 @@ git fetch upstream main --quiet 2>/dev/null || true
 git fetch origin --quiet 2>/dev/null || true
 
 UPSTREAM=$(git rev-parse upstream/main)
-ORIGIN_MAIN=$(git rev-parse origin/main 2>/dev/null || echo "")
 
 # BUG FIX (2026-07-23): the original unconditional
 # `if [ "$UPSTREAM" != "$ORIGIN_MAIN" ]` below does not check *direction* —
