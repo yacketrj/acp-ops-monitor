@@ -407,7 +407,32 @@ for r in yacketrj/dune-awakening-selfhost-docker yacketrj/dune-ops-observability
   fi
 done
 
-# ─── 5. Summary + Issue Tracking ───
+# ─── 5. Failed systemd units ───
+# Added 2026-07-25: this host runs real, unattended systemd services/timers
+# for this project (the live Discord bot, the game-server DB backup timer)
+# with no prior monitoring for silent failures. Found and fixed a real
+# case of this exact gap during the same cleanup work that added this
+# check: dune-awakening-db-backup.service had been failing daily since at
+# least 2026-07-23 (WorkingDirectory pointed at a stale, already-deleted
+# repo path -- the same class of bug as the auto-update timer fixed
+# earlier this session), undetected until a manual `systemctl --failed`
+# audit. This section closes that detection gap going forward using the
+# same report/issue pattern as the rest of this script, rather than
+# relying on a human to remember to check.
+echo "--- 5. Failed systemd units ---"
+FAILED_UNITS="$(systemctl --failed --no-legend --plain 2>/dev/null | awk '{print $1}')"
+if [ -n "$FAILED_UNITS" ]; then
+  while IFS= read -r unit; do
+    [ -n "$unit" ] || continue
+    echo -e "  ${RED}FAIL:${NC} $unit is in a failed state"
+    REPORT="${REPORT}\n⚠️ systemd unit **$unit** is in a failed state — run \`systemctl status $unit\` to investigate"
+    ISSUES=$((ISSUES + 1))
+  done <<< "$FAILED_UNITS"
+else
+  echo -e "  ${GREEN}OK:${NC} no failed systemd units"
+fi
+
+# ─── 6. Summary + Issue Tracking ───
 STATE_FILE="/tmp/acp-issue-state.txt"
 touch "$STATE_FILE"
 
