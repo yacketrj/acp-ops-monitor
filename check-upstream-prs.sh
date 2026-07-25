@@ -1,14 +1,28 @@
 #!/usr/bin/env bash
-# check-upstream-prs.sh — Track all yacketrj upstream PRs across both repos.
-# Only notifies Discord on PR merge events. Logs status locally.
+# check-upstream-prs.sh — Track all yacketrj upstream PRs across both repos,
+# plus real upstream release tags on repos this fork tracks/syncs from.
+# Only notifies Discord on PR merge events and on newly-detected upstream
+# release tags. Logs status locally.
 #
 # Usage: bash check-upstream-prs.sh
+#
+# Release-tag detection (added 2026-07-25): this script previously had no
+# visibility into real upstream (Red-Blink) cutting a new release -- it
+# only ever watched PR open/merge events on repos this account has PRs
+# against. That gap meant a real upstream release (v1.3.65, published
+# 2026-07-24) went completely undetected by this hourly monitor, and was
+# only discovered manually, well after the fact, during unrelated incident
+# response work. check_upstream_release() below closes that gap using the
+# same state-cache-diff + Discord-notify-on-transition pattern already
+# used for PR merges in check_repo(), so a human doesn't need to
+# separately remember to poll `gh release list` on any tracked upstream.
 
 set -euo pipefail
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; NC='\033[0m'
 NOTIFY="${HOME}/.local/bin/notify-discord.sh"
 CACHE="${HOME}/.cache/acp-pr-states.json"
+RELEASE_CACHE="${HOME}/.cache/acp-upstream-release-states.json"
 ISSUES=0
 
 echo "=== Upstream PR Status ($(date +%H:%M)) ==="
@@ -52,6 +66,57 @@ check_repo() {
   done < <(gh pr list --repo "$repo" --author yacketrj --state merged --limit 5 --json number,title,url,mergedAt --jq '.[] | "\(.number)\t\(.title)\t\(.url)\t\(.mergedAt)"' 2>/dev/null || true)
 }
 
+# Check the latest real release tag on a repo this fork tracks/syncs
+# from, and notify Discord exactly once when a genuinely new tag first
+# appears (never on every run, and never retroactively for a tag that was
+# already the latest the first time this check ran against this repo --
+# that would either spam on every single hourly run forever, or fire a
+# false "new release" notification the very first time this function is
+# deployed against a repo that already has releases). Uses the same
+# read-old-state / diff / write-new-state pattern as check_repo()'s PR
+# merge detection above, just keyed by repo+latest-tag instead of
+# repo+PR-number+status.
+NEW_RELEASE_STATE="{}"
+check_upstream_release() {
+  local repo="$1" label="$2"
+  local latest_tag latest_url latest_published old_tag
+
+  [ -f "$RELEASE_CACHE" ] && OLD_RELEASE_STATE="$(cat "$RELEASE_CACHE")" || OLD_RELEASE_STATE="{}"
+
+  latest_tag="$(gh release list --repo "$repo" --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || true)"
+  if [ -z "$latest_tag" ]; then
+    echo -e "  ${YELLOW}SKIP:${NC} $label — no releases found"
+    return
+  fi
+
+  latest_url="https://github.com/${repo}/releases/tag/${latest_tag}"
+  latest_published="$(gh release view "$latest_tag" --repo "$repo" --json publishedAt --jq '.publishedAt' 2>/dev/null || echo "unknown")"
+
+  old_tag="$(echo "$OLD_RELEASE_STATE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('$repo',''))" 2>/dev/null || echo "")"
+
+  if [ -z "$old_tag" ]; then
+    # First time this check has ever run against this repo -- record the
+    # current latest tag as the baseline, but do NOT notify. Every real
+    # release that existed before this monitor was deployed is not "new."
+    echo -e "  ${GREEN}OK:${NC} $label — baseline recorded: $latest_tag (no notification, first run for this repo)"
+  elif [ "$old_tag" != "$latest_tag" ]; then
+    echo -e "  ${GREEN}NEW RELEASE:${NC} $label — $old_tag -> $latest_tag ($latest_published)"
+    if [ -x "$NOTIFY" ]; then
+      bash "$NOTIFY" upstream-pr-merged \
+        "🚀 $label released $latest_tag" \
+        "**Repo:** $repo
+**Previous latest:** $old_tag
+**New latest:** $latest_tag
+**Published:** $latest_published" \
+        "$latest_url" >/dev/null 2>&1 || true
+    fi
+  else
+    echo -e "  ${GREEN}OK:${NC} $label — latest release unchanged: $latest_tag"
+  fi
+
+  NEW_RELEASE_STATE=$(echo "$NEW_RELEASE_STATE" | python3 -c "import json,sys; d=json.load(sys.stdin); d['$repo']='$latest_tag'; print(json.dumps(d))" 2>/dev/null || echo "$NEW_RELEASE_STATE")
+}
+
 # Check CI status for all repos
 check_ci() {
   local repo="$1" label="$2"
@@ -77,6 +142,15 @@ check_repo "yacketrj/Arrakis-Control-Panel" "ACP"
 check_repo "yacketrj/acp-landing" "Landing"
 
 echo ""
+echo "--- Upstream Release Status ---"
+# Only real upstream repos this fork actually tracks/syncs from -- yacketrj's
+# own repos (Addon, ACP, Landing) are not forks of anything and have no
+# "upstream release" concept distinct from their own releases, which
+# check_repo's PR-merge tracking already covers.
+check_upstream_release "Red-Blink/dune-awakening-selfhost-docker" "Core upstream"
+check_upstream_release "Red-Blink/dune-docker-addons" "Catalog upstream"
+
+echo ""
 echo "--- CI Status ---"
 check_ci "Red-Blink/dune-awakening-selfhost-docker" "Core"
 check_ci "yacketrj/dune-ops-observability-addon" "Addon"
@@ -85,6 +159,7 @@ check_ci "yacketrj/Arrakis-Control-Panel" "ACP"
 check_ci "yacketrj/acp-landing" "Landing"
 
 echo "$NEW_STATE" > "$CACHE"
+echo "$NEW_RELEASE_STATE" > "$RELEASE_CACHE"
 
 if [ "$ISSUES" -gt 0 ]; then
   echo ""
