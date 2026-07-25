@@ -17,7 +17,7 @@ Hourly cron jobs for monitoring ACP repositories: PR tracking, fork sync, CI val
 |--------|---------|
 | `check-upstream-prs.sh` | Track PRs across repos, notify on merges; also tracks real upstream release tags on `Red-Blink/*` repos and notifies once when a new tag first appears (added 2026-07-25, closing a real gap where an upstream release went undetected by this monitor and was only found manually during unrelated work) |
 | `validate-and-report.sh` | Fork sync, rebase, mergeability, CI validation, and failed-systemd-unit detection (added 2026-07-25, closing a real gap where `dune-awakening-db-backup.service` had been silently failing daily since at least 2026-07-23 and was only found via manual `systemctl --failed` audit) |
-| `notify-discord.sh` | Post events to Discord webhook |
+| `notify-discord.sh` | Post events to Discord webhook. `~/.local/bin/notify-discord.sh` (what `validate-and-report.sh`'s `$NOTIFY` actually invokes) is a symlink to this file -- edit here, never the deployed path directly. |
 
 ## State Caches
 
@@ -34,6 +34,10 @@ Deleting a cache file resets its baseline — the next run will silently re-esta
 
 - `discord-bot.service` — the live Arrakis Control Panel Discord bot (`Restart=always`)
 - `dune-awakening-db-backup.timer` / `.service` — daily game-server database backup
+
+## Secrets
+
+- `~/.config/acp-ops-monitor/dev-webhook-url.txt` — Discord webhook URL for `notify-discord.sh` (or set `DISCORD_DEV_WEBHOOK_URL` instead). Chosen deliberately as a stable, non-project location: an earlier version of this file lived inside a project working directory that was later deleted during an unrelated cleanup, silently breaking all Discord notifications until found and fixed (2026-07-25). Not committed to git (gitignored).
 
 ## Cron
 
