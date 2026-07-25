@@ -8,7 +8,16 @@ set -euo pipefail
 
 NOTIFY="${HOME}/.local/bin/notify-discord.sh"
 CORE_DIR="${HOME}/dune-awakening-selfhost-docker"
-CATALOG_DIR="${HOME}/dune-docker-addon/dune-docker-addons"
+# BUG FIX (2026-07-25): this used to point at
+# ~/dune-docker-addon/dune-docker-addons -- a nested clone inside a
+# since-deleted 15GB redundant scratch directory (~/dune-docker-addon,
+# removed during a home-directory cleanup audit). The real, canonical
+# catalog clone has always been at ~/dune-docker-addons directly. The
+# old path had a `[ -d "$CATALOG_DIR" ]` guard so it failed silently
+# (skipped catalog sync entirely) rather than crashing -- caught before
+# this ran again and silently skipped catalog syncing for however long
+# it would have taken to notice.
+CATALOG_DIR="${HOME}/dune-docker-addons"
 TODAY="$(date +%Y-%m-%d)"
 ISSUES=0
 ACTIVITY=0
