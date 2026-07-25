@@ -407,14 +407,24 @@ while IFS=$'\t' read -r pr title; do
 done < <(gh pr list --repo Red-Blink/dune-awakening-selfhost-docker --author yacketrj --state closed --limit 10 --json number,title --jq '.[] | "\(.number)\t\(.title)"' 2>/dev/null)
 
 # ─── 4. CI failure check ───
+# Updated 2026-07-25: added acp-ops-monitor (this repo) and tools to the
+# checked list -- per ~/README.md's Strict Requirement #1 ("no repo's
+# GitHub Actions may be left in a failing state on its default branch"),
+# every repo this workstream maintains should be covered here, not just
+# the Dune/ACP application repos. Found via this exact gap: this repo's
+# own CI had been failing on main for several hours before being noticed
+# manually, specifically because this check didn't include itself.
 echo "--- 4. CI failures ---"
-for r in yacketrj/dune-awakening-selfhost-docker yacketrj/dune-ops-observability-addon yacketrj/dune-docker-addons yacketrj/arrakis-control-panel yacketrj/acp-landing; do
-  LATEST=$(gh run list --repo "$r" --branch main --limit 1 --json conclusion --jq '.[0].conclusion' 2>/dev/null || echo "")
+for r in yacketrj/dune-awakening-selfhost-docker yacketrj/dune-ops-observability-addon yacketrj/dune-docker-addons yacketrj/arrakis-control-panel yacketrj/acp-landing yacketrj/acp-ops-monitor yacketrj/tools; do
   REPO_NAME=$(echo "$r" | cut -d'/' -f2)
+  RUN_JSON=$(gh run list --repo "$r" --branch main --limit 1 --json conclusion 2>/dev/null || echo "[]")
+  LATEST=$(echo "$RUN_JSON" | jq -r '.[0].conclusion // "none"' 2>/dev/null || echo "none")
   if [ "$LATEST" = "failure" ]; then
     echo -e "  ${RED}FAIL:${NC} $REPO_NAME — latest CI: failure"
     REPORT="${REPORT}\n⚠️ **$REPO_NAME** — latest CI \`failure\` needs resolution"
     ISSUES=$((ISSUES + 1))
+  elif [ "$LATEST" = "none" ]; then
+    echo -e "  ${YELLOW}SKIP:${NC} $REPO_NAME — no CI runs found (no workflow configured?)"
   else
     echo -e "  ${GREEN}OK:${NC} $REPO_NAME — clean"
   fi
