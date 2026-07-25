@@ -4,6 +4,15 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    # Wait 7 days after a new package version is published before proposing
+    # an update to it. Newly published versions can be malicious or unstable
+    # (a compromised release, or an untested regression) -- a short cooldown
+    # gives the community time to catch and report problems before this
+    # repo's CI automatically starts running that version. Matches the same
+    # fix already applied in Arrakis-Control-Panel for the identical Semgrep
+    # finding (dependabot-missing-cooldown).
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
     reviewers:
       - "yacketrj"

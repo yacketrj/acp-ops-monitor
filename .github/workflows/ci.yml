@@ -19,18 +19,65 @@ jobs:
     name: Shell Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Run ShellCheck
-        uses: ludeeus/action-shellcheck@master
+        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
         with:
           scandir: './'
           severity: warning
+
+  actionlint:
+    name: Workflow Lint (actionlint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download actionlint (pinned version, checksum-verified release binary)
+        # BUG FIX (2026-07-24): the first version of this step downloaded the
+        # release tarball with `-o actionlint.tar.gz`, renaming it away from
+        # its original filename -- but actionlint_1.7.12_checksums.txt's
+        # entries are keyed by the ORIGINAL filename
+        # (actionlint_1.7.12_linux_amd64.tar.gz), so `sha256sum -c -` could
+        # never find a file with that name and failed every run
+        # unconditionally. This passed local testing because the local
+        # verification (done manually, not via this exact script) happened
+        # to download the file under its original name. Fixed by not
+        # renaming the download -- keep the original filename throughout so
+        # the checksum file's entries resolve correctly.
+        run: |
+          set -euo pipefail
+          curl -fsSL -O \
+            "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz"
+          curl -fsSL -O \
+            "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_checksums.txt"
+          grep "actionlint_1.7.12_linux_amd64.tar.gz" actionlint_1.7.12_checksums.txt | sha256sum -c -
+          tar -xzf actionlint_1.7.12_linux_amd64.tar.gz actionlint
+          chmod +x actionlint
+      - name: Run actionlint
+        run: ./actionlint -color
+
+  markdownlint:
+    name: Markdown Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run markdownlint-cli2
+        run: npx --yes markdownlint-cli2@0.23.1 "**/*.md"
+
+  test:
+    name: Shell Test Suite (bats)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install bats
+        run: sudo apt-get update -qq && sudo apt-get install -y bats
+      - name: Run bats test suite
+        run: bats tests/
 
   validate-json:
     name: Validate JSON
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Validate JSON files
         run: |
           find . -name "*.json" -not -path "./node_modules/*" -not -path "./.git/*" -exec python3 -c "import json,sys; json.load(open(sys.argv[1]))" {} \; || { echo "Invalid JSON found"; exit 1; }
@@ -40,22 +87,33 @@ jobs:
     name: Security Scanning
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Run gitleaks
-        uses: gitleaks/gitleaks-action@v3
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Run semgrep
-        uses: returntocorp/semgrep-action@v1
-        with:
-          config: >-
-            p/security-audit
-            p/secrets
-            p/bash
+        # NOTE: returntocorp/semgrep-action (previously used here) is
+        # unmaintained -- no commits since Jan 2024, and its current home
+        # (semgrep/semgrep-action) is archived. Running the actively
+        # maintained semgrep CLI directly also closes a local/CI parity gap:
+        # .pre-commit-config.yaml already runs this exact CLI invocation
+        # locally, so CI and local pre-commit now enforce identical rules
+        # instead of two different mechanisms silently drifting apart.
+        #
+        # p/bash is intentionally NOT included: it has been removed from
+        # Semgrep's public registry (verified 2026-07-24 -- `semgrep scan
+        # --config p/bash` returns a 404 from https://semgrep.dev/c/p/bash,
+        # and it no longer appears in the registry's ruleset listing at
+        # all). Shell-script-specific static analysis is covered by the
+        # separate ShellCheck job in this same workflow instead.
+        run: |
+          pip install --quiet semgrep
+          semgrep scan --config p/security-audit --config p/secrets --error
       - name: Run trivy
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: 'fs'
           scan-ref: '.'
@@ -65,18 +123,21 @@ jobs:
   ci-gate:
     name: CI Gate
     if: ${{ always() }}
-    needs: [shellcheck, validate-json, security]
+    needs: [shellcheck, actionlint, markdownlint, test, validate-json, security]
     runs-on: ubuntu-latest
     steps:
       - name: Require every check to pass
         env:
           SHELLCHECK: ${{ needs.shellcheck.result }}
+          ACTIONLINT: ${{ needs.actionlint.result }}
+          MARKDOWNLINT: ${{ needs.markdownlint.result }}
+          TEST: ${{ needs.test.result }}
           JSON: ${{ needs.validate-json.result }}
           SECURITY: ${{ needs.security.result }}
         run: |
           set -euo pipefail
           failed=0
-          for result in "$SHELLCHECK" "$JSON" "$SECURITY"; do
+          for result in "$SHELLCHECK" "$ACTIONLINT" "$MARKDOWNLINT" "$TEST" "$JSON" "$SECURITY"; do
             if [ "$result" != "success" ]; then
               failed=1
             fi

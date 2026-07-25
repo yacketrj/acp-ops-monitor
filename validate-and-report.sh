@@ -78,8 +78,10 @@ ORIGIN_MAIN=$(git rev-parse origin/main 2>/dev/null || echo "")
 # commits, which is the correct failure mode for an unattended hourly
 # cron job touching a repo's main branch.
 AHEAD_OF_UPSTREAM=$(git rev-list upstream/main..origin/main --count 2>/dev/null || echo "0")
-if [ "$UPSTREAM" != "$ORIGIN_MAIN" ] && [ "$AHEAD_OF_UPSTREAM" = "0" ]; then
-  BEHIND=$(git rev-list origin/main..upstream/main --count 2>/dev/null || echo "?")
+BEHIND=$(git rev-list origin/main..upstream/main --count 2>/dev/null || echo "0")
+SYNC_STATUS="$(sync_decision "$AHEAD_OF_UPSTREAM" "$BEHIND")"
+
+if [ "$SYNC_STATUS" = "sync" ]; then
   echo "  SYNC: core fork $BEHIND commits behind — syncing main..."
 
   # Save current branch and working tree
@@ -284,15 +286,16 @@ if [ "$UPSTREAM" != "$ORIGIN_MAIN" ] && [ "$AHEAD_OF_UPSTREAM" = "0" ]; then
   elif [ "$CURRENT_BRANCH" != "main" ]; then
     git checkout "$CURRENT_BRANCH" 2>/dev/null || git checkout integration/discord 2>/dev/null || true
   fi
-elif [ "$UPSTREAM" != "$ORIGIN_MAIN" ]; then
+elif [ "$SYNC_STATUS" = "diverged" ]; then
   # origin/main is AHEAD of or has DIVERGED from upstream/main (has
   # fork-local merged work upstream doesn't have) — this is expected and
-  # healthy, NOT an error condition, and must never trigger a reset. See
-  # the BUG FIX comment above for why this branch exists as its own case
-  # rather than falling through to the reset logic.
+  # healthy, NOT an error condition, and must never trigger a reset. This
+  # is the exact case that caused the 2026-07-22 incidents when the old
+  # logic didn't distinguish it from "genuinely behind" — see
+  # lib/sync-direction.sh and tests/sync-direction.bats.
   echo -e "  ${GREEN}OK:${NC} core fork main is ahead of/diverged from upstream by design (local merges not yet upstreamed) — not syncing"
 else
-  echo -e "  ${GREEN}OK:${NC} core fork synced ($(echo $UPSTREAM | cut -c1-7))"
+  echo -e "  ${GREEN}OK:${NC} core fork synced ($(echo "$UPSTREAM" | cut -c1-7))"
 fi
 
 # ─── 2. Catalog fork sync ───
@@ -342,7 +345,7 @@ if [ -d "$CATALOG_DIR" ]; then
   elif [ -n "$CAT_UP" ] && [ -n "$CAT_OR" ] && [ "$CAT_UP" != "$CAT_OR" ]; then
     echo -e "  ${GREEN}OK:${NC} catalog fork main is ahead of/diverged from upstream by design — not syncing"
   else
-    echo -e "  ${GREEN}OK:${NC} catalog fork synced"
+    echo -e "  ${YELLOW}SKIP:${NC} catalog fork remotes not configured"
   fi
 else
   echo "  SKIP: catalog dir not found"
