@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # check-upstream-prs.sh — Track all yacketrj upstream PRs across both repos,
 # plus real upstream release tags on repos this fork tracks/syncs from.
+# Pre-flight: verify GitHub authentication
+if ! gh auth status >/dev/null 2>&1; then
+  echo "FATAL: gh not authenticated. Set GH_TOKEN." >&2
+  exit 1
+fi
+
 # Only notifies Discord on PR merge events and on newly-detected upstream
 # release tags. Logs status locally.
 #
