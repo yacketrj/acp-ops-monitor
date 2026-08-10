@@ -60,8 +60,8 @@ fi
 
 echo
 echo "--- Checking monitored local clones ---"
-CORE_DIR="${ACP_CORE_DIR:-${HOME}/dune-awakening-selfhost-docker}"
-CATALOG_DIR="${ACP_CATALOG_DIR:-${HOME}/dune-docker-addon/dune-docker-addons}"
+CORE_DIR="${ACP_CORE_DIR:-${HOME}/projects/dune/dune-awakening-selfhost-docker}"
+CATALOG_DIR="${ACP_CATALOG_DIR:-${HOME}/projects/dune/dune-docker-addons}"
 if [ -d "$CORE_DIR/.git" ]; then
   echo -e "  ${GREEN}OK:${NC} core fork clone found at $CORE_DIR"
   if git -C "$CORE_DIR" remote get-url upstream >/dev/null 2>&1; then
