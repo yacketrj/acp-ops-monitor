@@ -36,6 +36,44 @@ GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; NC='\033[0m'
 
 echo "=== ACP Validation ($(date +%H:%M)) ==="
 
+# ─── 0. Upstream release detection ───
+echo "--- 0. Upstream release detection ---"
+cd "$CORE_DIR"
+
+git fetch upstream --tags --quiet 2>/dev/null || true
+git fetch origin --quiet 2>/dev/null || true
+
+# Detect new version tags
+LATEST_TAG=$(git tag --sort=-creatordate 2>/dev/null | grep -E '^v[0-9]' | head -1)
+TAG_STATE_FILE="/home/darkdante/.cache/acp-ops-monitor/known-tags.txt"
+touch "$TAG_STATE_FILE"
+
+if [ -n "$LATEST_TAG" ]; then
+  TAG_DATE=$(git log -1 --format=%ai "$LATEST_TAG" 2>/dev/null | cut -d' ' -f1)
+  if ! grep -q "^$LATEST_TAG$" "$TAG_STATE_FILE" 2>/dev/null; then
+    BEHIND_COUNT=$(git rev-list HEAD.."$LATEST_TAG" --count 2>/dev/null || echo "?")
+    echo -e "  ${YELLOW}NEW RELEASE:${NC} $LATEST_TAG ($TAG_DATE) — $BEHIND_COUNT commits behind"
+    # File a tracking issue
+    FINGERPRINT="release-${LATEST_TAG}"
+    COMMIT_LIST=$(git log --oneline HEAD.."$LATEST_TAG" 2>/dev/null | head -10 || echo "unknown")
+    timeout 30 gh issue create --title "upstream: $LATEST_TAG released — $BEHIND_COUNT commits ahead" \
+      --label "enhancement,priority:high" \
+      --body "Upstream released **$LATEST_TAG** on $TAG_DATE.
+
+\`\`\`
+$COMMIT_LIST
+\`\`\`
+
+Action needed: sync fork main, rebase open PRs, verify CI." \
+      --repo yacketrj/dune-awakening-selfhost-docker 2>/dev/null
+    echo "$LATEST_TAG" >> "$TAG_STATE_FILE"
+    REPORT="${REPORT}\n🆕 **$LATEST_TAG** released ($BEHIND_COUNT commits behind)"
+    ACTIVITY=$((ACTIVITY + 1))
+  else
+    echo -e "  ${GREEN}OK:${NC} $LATEST_TAG already known"
+  fi
+fi
+
 # ─── 1. Core fork: sync main with upstream ───
 echo "--- 1. Core fork sync ---"
 cd "$CORE_DIR"
@@ -176,105 +214,32 @@ if [ "$SYNC_STATUS" = "sync" ]; then
     echo "skipped (no branch)"
   fi
 
-  # ─── Rebase all open PR branches on updated main ───
-  echo "  Rebasing open PR branches..."
+  # ─── Check open PR branches for conflicts (read-only, no modification) ───
+  echo "  Checking open PR branches for conflicts..."
 
-  OPEN_PRS=$(timeout 60 gh pr list --repo Red-Blink/dune-awakening-selfhost-docker --author yacketrj --state open --json headRefName --jq '.[].headRefName' 2>/dev/null || echo "")
+  OPEN_PRS=$(timeout 60 gh pr list --repo Red-Blink/dune-awakening-selfhost-docker --author yacketrj --state open --json headRefName,number,title,mergeable --jq '.[] | "\(.headRefName)\t\(.number)\t\(.title)\t\(.mergeable)"' 2>/dev/null || echo "")
 
-  for branch in $OPEN_PRS; do
-    echo -n "    $branch: "
-    if ! git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
-      echo "skipped (no remote)"
-      continue
-    fi
-
-    git checkout "$branch" 2>/dev/null || { echo "failed (checkout)"; continue; }
-
-    if git rebase upstream/main 2>/dev/null; then
-      # BUG FIX (2026-07-25): --no-verify removed. A rebase can
-      # legitimately introduce a real regression relative to a PR
-      # branch's last-known-good state (e.g. upstream changed something
-      # this branch's own tests didn't account for) -- that's real,
-      # actionable information a human reviewing this PR needs to see,
-      # not something to silently push past. Calculated call: still
-      # push-and-report rather than blocking the whole sync run over one
-      # branch, since this is WIP that hasn't merged anywhere yet and a
-      # blocked push here has no destructive consequence -- just report
-      # it clearly so it doesn't go unnoticed.
-      PUSH_OUT="$(git push origin "$branch" --force-with-lease 2>&1)"
-      PUSH_RC="${PIPESTATUS[0]:-$?}"
-      echo "$PUSH_OUT" | tail -3
-      if [ "$PUSH_RC" -eq 0 ]; then
-        echo -e "${GREEN}rebased${NC}"
-      else
-        echo -e "${RED}PUSH BLOCKED (gate failure)${NC}"
-        REPORT="${REPORT}\n❌ PR branch \`$branch\` rebased onto upstream/main but push was blocked by pre-push gate — rebase result not yet on origin, investigate manually"
-        ISSUES=$((ISSUES + 1))
+  while IFS=$'\t' read -r branch pr title mergeable; do
+    [ -n "$branch" ] || continue
+    echo -n "    $branch (#$pr): "
+    if [ "$mergeable" = "MERGEABLE" ]; then
+      echo -e "${GREEN}MERGEABLE${NC}"
+    elif [ "$mergeable" = "CONFLICTING" ]; then
+      echo -e "${RED}CONFLICT${NC}"
+      REPORT="${REPORT}\n❌ PR #$pr ($branch) conflicts with upstream/main — \"$title\""
+      ISSUES=$((ISSUES + 1))
+      # File GitHub issue for conflict
+      FINGERPRINT="conflict-${pr}-$(date +%Y%m%d)"
+      if ! grep -q "$FINGERPRINT" "$STATE_FILE" 2>/dev/null; then
+        timeout 30 gh issue create --title "fix: PR #$pr ($branch) conflicts with upstream/main — needs rebase" \
+          --label "bug,priority:high" \
+          --body "PR https://github.com/Red-Blink/dune-awakening-selfhost-docker/pull/$pr has merge conflicts with the latest upstream release. The branch \`$branch\` needs to be rebased onto \`upstream/main\` and force-pushed." \
+          --repo yacketrj/dune-awakening-selfhost-docker 2>/dev/null && echo "$FINGERPRINT" >> "$STATE_FILE" || true
       fi
     else
-      git rebase --abort 2>/dev/null || true
-      echo -e "${RED}CONFLICT${NC}"
-      REPORT="${REPORT}\n❌ PR branch \`$branch\` has merge conflicts with upstream/main"
-      ISSUES=$((ISSUES + 1))
+      echo -e "${YELLOW}$mergeable${NC}"
     fi
-  done
-
-  # ─── Sync active feature branches (modified in last 30 days) ───
-  echo "  Syncing active feature branches..."
-
-  CUTOFF_DATE="$(date -d '30 days ago' +%Y-%m-%d)"
-  ACTIVE_BRANCHES=$(git for-each-ref --sort=-committerdate --format='%(refname:short) %(committerdate:short)' refs/heads/feature/ refs/heads/fix/ 2>/dev/null | awk -v cutoff="$CUTOFF_DATE" '$2 >= cutoff {print $1}' || echo "")
-
-  if [ -n "$ACTIVE_BRANCHES" ]; then
-    echo "    Found $(echo "$ACTIVE_BRANCHES" | wc -l) active branches"
-
-    for branch in $ACTIVE_BRANCHES; do
-      echo -n "    $branch: "
-
-      # Skip if already on this branch
-      if [ "$(git branch --show-current)" = "$branch" ]; then
-        echo "skipped (current branch)"
-        continue
-      fi
-
-      # Check if branch exists
-      if ! git show-ref --verify --quiet "refs/heads/$branch"; then
-        echo "skipped (no local branch)"
-        continue
-      fi
-
-      # Checkout and rebase
-      if git checkout "$branch" 2>/dev/null; then
-        if git rebase upstream/main 2>/dev/null; then
-          # BUG FIX (2026-07-25): --no-verify removed, same calculated
-          # reasoning as the PR-branch sync above -- this is WIP that
-          # hasn't merged anywhere, so a blocked push is non-destructive,
-          # but a real gate failure introduced by the rebase is genuinely
-          # actionable information worth surfacing, not silently
-          # bypassing.
-          PUSH_OUT="$(git push origin "$branch" --force-with-lease 2>&1)"
-          PUSH_RC="${PIPESTATUS[0]:-$?}"
-          echo "$PUSH_OUT" | tail -3
-          if [ "$PUSH_RC" -eq 0 ]; then
-            echo -e "${GREEN}synced${NC}"
-          else
-            echo -e "${RED}PUSH BLOCKED (gate failure)${NC}"
-            REPORT="${REPORT}\n❌ $branch rebased onto upstream/main but push was blocked by pre-push gate — investigate manually"
-            ISSUES=$((ISSUES + 1))
-          fi
-        else
-          git rebase --abort 2>/dev/null || true
-          echo -e "${RED}CONFLICT${NC}"
-          REPORT="${REPORT}\n❌ $branch has rebase conflicts with upstream/main"
-          ISSUES=$((ISSUES + 1))
-        fi
-      else
-        echo "failed (checkout)"
-      fi
-    done
-  else
-    echo "    No active branches found"
-  fi
+  done <<< "$OPEN_PRS"
 
   # ─── Clean up stale merged PR branches ───
   echo -n "  Cleaning merged branches: "
