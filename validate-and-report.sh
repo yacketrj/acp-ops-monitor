@@ -487,6 +487,25 @@ else
   echo -e "  ${YELLOW}SKIP:${NC} ~/tools/structure-lint not found or not executable"
 fi
 
+
+# ─── 6b. Upstream test drift ───
+echo "--- 6b. Upstream test drift ---"
+DRIFT_SCRIPT="${HOME}/projects/dune/dune-awakening-selfhost-docker/scripts/check-upstream-test-drift.sh"
+if [ -x "$DRIFT_SCRIPT" ]; then
+  DRIFT_OUT="$("$DRIFT_SCRIPT" 2>&1)"
+  DRIFT_RC=$?
+  if [ "$DRIFT_RC" -eq 0 ]; then
+    echo -e "  ${GREEN}OK:${NC} no upstream test drift"
+  else
+    echo -e "  ${YELLOW}DRIFT:${NC} upstream tests have diverged or new tests detected"
+    echo "$DRIFT_OUT" | while IFS= read -r line; do
+      echo "  $line"
+    done
+  fi
+else
+  echo -e "  ${YELLOW}SKIP:${NC} drift checker not found — lives on Core PR branch"
+fi
+
 # ─── 7. Summary + Issue Tracking ───
 STATE_FILE="/home/darkdante/.cache/acp-ops-monitor/issue-state.txt"
 touch "$STATE_FILE"
