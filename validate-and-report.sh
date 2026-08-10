@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # validate-and-report.sh — Hourly fork sync, PR rebase, mergeability, and CI validation.
 # Auto-syncs core fork main with upstream, rebases open PR branches, and reports issues to Discord.
+# Pre-flight: verify GitHub authentication
+if ! gh auth status >/dev/null 2>&1; then
+  echo "FATAL: gh not authenticated. Set GH_TOKEN." >&2
+  exit 1
+fi
+
 #
 # Usage: bash validate-and-report.sh
 
@@ -380,7 +386,7 @@ check_prs "Red-Blink/dune-docker-addons" "Catalog"
 
 # ─── 3b. Recently merged/closed PRs ───
 echo "--- 3b. Recent PR activity ---"
-PR_STATE_FILE="/tmp/acp-known-prs.txt"
+PR_STATE_FILE="/home/darkdante/.cache/acp-ops-monitor/known-prs.txt"
 touch "$PR_STATE_FILE"
 
 CORE_DIR_PR="${CORE_DIR}"
@@ -482,7 +488,7 @@ else
 fi
 
 # ─── 7. Summary + Issue Tracking ───
-STATE_FILE="/tmp/acp-issue-state.txt"
+STATE_FILE="/home/darkdante/.cache/acp-ops-monitor/issue-state.txt"
 touch "$STATE_FILE"
 
 echo
