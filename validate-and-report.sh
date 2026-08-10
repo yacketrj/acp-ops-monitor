@@ -179,7 +179,7 @@ if [ "$SYNC_STATUS" = "sync" ]; then
   # ─── Rebase all open PR branches on updated main ───
   echo "  Rebasing open PR branches..."
 
-  OPEN_PRS=$(gh pr list --repo Red-Blink/dune-awakening-selfhost-docker --author yacketrj --state open --json headRefName --jq '.[].headRefName' 2>/dev/null || echo "")
+  OPEN_PRS=$(timeout 60 gh pr list --repo Red-Blink/dune-awakening-selfhost-docker --author yacketrj --state open --json headRefName --jq '.[].headRefName' 2>/dev/null || echo "")
 
   for branch in $OPEN_PRS; do
     echo -n "    $branch: "
@@ -278,7 +278,7 @@ if [ "$SYNC_STATUS" = "sync" ]; then
 
   # ─── Clean up stale merged PR branches ───
   echo -n "  Cleaning merged branches: "
-  MERGED_BRANCHES=$(gh pr list --repo Red-Blink/dune-awakening-selfhost-docker --author yacketrj --state merged --limit 20 --json headRefName --jq '.[].headRefName' 2>/dev/null || echo "")
+  MERGED_BRANCHES=$(timeout 60 gh pr list --repo Red-Blink/dune-awakening-selfhost-docker --author yacketrj --state merged --limit 20 --json headRefName --jq '.[].headRefName' 2>/dev/null || echo "")
   CLEANED=0
   for branch in $MERGED_BRANCHES; do
     if git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
@@ -379,7 +379,7 @@ check_prs() {
       REPORT="${REPORT}\n❌ PR #$pr ($label) — **$mergeable** — $title"
       ISSUES=$((ISSUES + 1))
     fi
-  done < <(gh pr list --repo "$repo" --author yacketrj --state open --json number,title,mergeable --jq '.[] | "\(.number)\t\(.title)\t\(.mergeable)"' 2>/dev/null)
+  done < <(timeout 60 gh pr list --repo "$repo" --author yacketrj --state open --json number,title,mergeable --jq '.[] | "\(.number)\t\(.title)\t\(.mergeable)"' 2>/dev/null)
 }
 check_prs "Red-Blink/dune-awakening-selfhost-docker" "Core"
 check_prs "Red-Blink/dune-docker-addons" "Catalog"
@@ -401,7 +401,7 @@ while IFS=$'\t' read -r pr title mergedAt; do
   else
     echo -e "  ${GREEN}OK:${NC} PR #$pr (Core) — merged $mergedAt"
   fi
-done < <(gh pr list --repo Red-Blink/dune-awakening-selfhost-docker --author yacketrj --state merged --limit 10 --json number,title,mergedAt --jq '.[] | "\(.number)\t\(.title)\t\(.mergedAt)"' 2>/dev/null)
+done < <(timeout 60 gh pr list --repo Red-Blink/dune-awakening-selfhost-docker --author yacketrj --state merged --limit 10 --json number,title,mergedAt --jq '.[] | "\(.number)\t\(.title)\t\(.mergedAt)"' 2>/dev/null)
 
 while IFS=$'\t' read -r pr title; do
   if ! grep -q "^merged:$pr$" "$PR_STATE_FILE" 2>/dev/null && ! grep -q "^closed:$pr$" "$PR_STATE_FILE" 2>/dev/null; then
@@ -410,7 +410,7 @@ while IFS=$'\t' read -r pr title; do
     ACTIVITY=$((ACTIVITY + 1))
     echo "closed:$pr" >> "$PR_STATE_FILE"
   fi
-done < <(gh pr list --repo Red-Blink/dune-awakening-selfhost-docker --author yacketrj --state closed --limit 10 --json number,title --jq '.[] | "\(.number)\t\(.title)"' 2>/dev/null)
+done < <(timeout 60 gh pr list --repo Red-Blink/dune-awakening-selfhost-docker --author yacketrj --state closed --limit 10 --json number,title --jq '.[] | "\(.number)\t\(.title)"' 2>/dev/null)
 
 # ─── 4. CI failure check ───
 # Updated 2026-07-25: added acp-ops-monitor (this repo) and tools to the
@@ -423,7 +423,7 @@ done < <(gh pr list --repo Red-Blink/dune-awakening-selfhost-docker --author yac
 echo "--- 4. CI failures ---"
 for r in yacketrj/dune-awakening-selfhost-docker yacketrj/dune-ops-observability-addon yacketrj/dune-docker-addons yacketrj/arrakis-control-panel yacketrj/acp-landing yacketrj/acp-ops-monitor yacketrj/tools; do
   REPO_NAME=$(echo "$r" | cut -d'/' -f2)
-  RUN_JSON=$(gh run list --repo "$r" --branch main --limit 1 --json conclusion 2>/dev/null || echo "[]")
+  RUN_JSON=$(timeout 30 gh run list --repo "$r" --branch main --limit 1 --json conclusion 2>/dev/null || echo "[]")
   LATEST=$(echo "$RUN_JSON" | jq -r '.[0].conclusion // "none"' 2>/dev/null || echo "none")
   if [ "$LATEST" = "failure" ]; then
     echo -e "  ${RED}FAIL:${NC} $REPO_NAME — latest CI: failure"
@@ -490,6 +490,13 @@ fi
 # ─── 7. Summary + Issue Tracking ───
 STATE_FILE="/home/darkdante/.cache/acp-ops-monitor/issue-state.txt"
 touch "$STATE_FILE"
+
+# Prune state files older than 30 days (prevents unbounded growth)
+for f in "$STATE_FILE" /home/darkdante/.cache/acp-ops-monitor/pr-states.json; do
+  if [ -f "$f" ]; then
+    find "$(dirname "$f")" -name "$(basename "$f")" -mtime +30 -delete 2>/dev/null || true
+  fi
+done
 
 echo
 # Build issue fingerprint from REPORT

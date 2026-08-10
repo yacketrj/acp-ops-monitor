@@ -21,7 +21,7 @@ fi
 # response work. check_upstream_release() below closes that gap using the
 # same state-cache-diff + Discord-notify-on-transition pattern already
 # used for PR merges in check_repo(), so a human doesn't need to
-# separately remember to poll `gh release list` on any tracked upstream.
+# separately remember to poll `timeout 60 gh release list` on any tracked upstream.
 
 set -euo pipefail
 
@@ -69,7 +69,7 @@ check_repo() {
     local key="${repo}_${pr}"
     echo -e "  PR #$pr: ${YELLOW}OPEN${NC}  ${title:0:80}"
     NEW_STATE["$key"]="OPEN"
-  done < <(gh pr list --repo "$repo" --author yacketrj --state open --json number,title,url --jq '.[] | "\(.number)\t\(.title)\t\(.url)"' 2>/dev/null || true)
+  done < <(timeout 60 gh pr list --repo "$repo" --author yacketrj --state open --json number,title,url --jq '.[] | "\(.number)\t\(.title)\t\(.url)"' 2>/dev/null || true)
 
   # Recently merged — notify Discord on OPEN→MERGED transition
   while IFS=$'\t' read -r pr title url merged; do
@@ -88,7 +88,7 @@ check_repo() {
       fi
     fi
     NEW_STATE["$key"]="MERGED"
-  done < <(gh pr list --repo "$repo" --author yacketrj --state merged --limit 5 --json number,title,url,mergedAt --jq '.[] | "\(.number)\t\(.title)\t\(.url)\t\(.mergedAt)"' 2>/dev/null || true)
+  done < <(timeout 60 gh pr list --repo "$repo" --author yacketrj --state merged --limit 5 --json number,title,url,mergedAt --jq '.[] | "\(.number)\t\(.title)\t\(.url)\t\(.mergedAt)"' 2>/dev/null || true)
 }
 
 # Check the latest real release tag on a repo this fork tracks/syncs
@@ -108,14 +108,14 @@ check_upstream_release() {
 
   [ -f "$RELEASE_CACHE" ] && OLD_RELEASE_STATE="$(cat "$RELEASE_CACHE")" || OLD_RELEASE_STATE="{}"
 
-  latest_tag="$(gh release list --repo "$repo" --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || true)"
+  latest_tag="$(timeout 60 gh release list --repo "$repo" --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || true)"
   if [ -z "$latest_tag" ]; then
     echo -e "  ${YELLOW}SKIP:${NC} $label — no releases found"
     return
   fi
 
   latest_url="https://github.com/${repo}/releases/tag/${latest_tag}"
-  latest_published="$(gh release view "$latest_tag" --repo "$repo" --json publishedAt --jq '.publishedAt' 2>/dev/null || echo "unknown")"
+  latest_published="$(timeout 60 gh release view "$latest_tag" --repo "$repo" --json publishedAt --jq '.publishedAt' 2>/dev/null || echo "unknown")"
 
   old_tag="$(echo "$OLD_RELEASE_STATE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('$repo',''))" 2>/dev/null || echo "")"
 
@@ -146,7 +146,7 @@ check_upstream_release() {
 check_ci() {
   local repo="$1" label="$2"
   local latest
-  latest=$(gh run list --repo "$repo" --branch main --limit 1 --json conclusion --jq '.[0].conclusion' 2>/dev/null || echo "")
+  latest=$(timeout 30 gh run list --repo "$repo" --branch main --limit 1 --json conclusion --jq '.[0].conclusion' 2>/dev/null || echo "")
   local repo_name
   repo_name=$(echo "$repo" | cut -d'/' -f2)
   if [ "$latest" = "failure" ]; then
