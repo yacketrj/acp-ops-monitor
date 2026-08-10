@@ -95,7 +95,7 @@ echo "--- Suggested crontab entry ---"
 echo "Run 'crontab -e' and add (adjust the env exports for your webhook/paths):"
 echo
 echo "  DISCORD_DEV_WEBHOOK_URL=https://discord.com/api/webhooks/REDACTED"
-echo "  0 * * * * bash ${SCRIPT_DIR}/check-upstream-prs.sh >> /home/darkdante/.cache/acp-ops-monitor/cron.log 2>&1; bash ${SCRIPT_DIR}/validate-and-report.sh >> /home/darkdante/.cache/acp-ops-monitor/cron.log 2>&1"
+echo "  0 * * * * flock -n ${HOME}/.cache/acp-ops-monitor.lock bash ${SCRIPT_DIR}/check-upstream-prs.sh >> /home/darkdante/.cache/acp-ops-monitor/cron.log 2>&1; flock -n ${HOME}/.cache/acp-ops-monitor.lock bash ${SCRIPT_DIR}/validate-and-report.sh >> /home/darkdante/.cache/acp-ops-monitor/cron.log 2>&1"
 echo
 echo "Cron does not read your shell's rc files, so environment variables set in"
 echo "\$HOME/.bashrc will NOT be visible to these scripts unless also set directly in"
