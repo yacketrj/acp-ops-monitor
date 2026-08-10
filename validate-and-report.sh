@@ -518,12 +518,23 @@ if [ "$ISSUES" -eq 0 ] && [ -n "$RESOLVED" ]; then
       "" 5763719 >/dev/null 2>&1 || true
   fi
 elif [ "$ISSUES" -eq 0 ]; then
-  echo -e "${GREEN}All checks passed.${NC} $ACTIVITY new PR events. Sending status update."
-  if [ -x "$NOTIFY" ]; then
-    bash "$NOTIFY" deploy \
-      "✅ ACP Validation — All Clear" \
-      "Core fork synced. All PRs MERGEABLE. CI clean. $ACTIVITY PR events detected." \
-      "" 5763719 >/dev/null 2>&1 || true
+  # Only send "All Clear" when transitioning from issues→clean, NOT when
+  # staying clean (suppresses 24 noisy notifications/day). If the previous
+  # fingerprint was already "clean", skip — nothing changed.
+  local OLD_FINGERPRINT=""
+  if [ -f "$STATE_FILE" ]; then
+    read -r OLD_FINGERPRINT _ < "$STATE_FILE" 2>/dev/null || true
+  fi
+  if [ "$OLD_FINGERPRINT" = "clean" ]; then
+    echo -e "${GREEN}All checks passed.${NC} $ACTIVITY new PR events. Skipping notification (state unchanged)."
+  else
+    echo -e "${GREEN}All checks passed.${NC} $ACTIVITY new PR events. Sending status update."
+    if [ -x "$NOTIFY" ]; then
+      bash "$NOTIFY" deploy \
+        "✅ ACP Validation — All Clear" \
+        "Core fork synced. All PRs MERGEABLE. CI clean. $ACTIVITY PR events detected." \
+        "" 5763719 >/dev/null 2>&1 || true
+    fi
   fi
 else
   echo -e "${RED}$ISSUES issue(s) found.${NC} $ACTIVITY PR events. Sending Discord notification."
