@@ -61,10 +61,13 @@ printed line into `crontab -e` yourself after reviewing it.
 
 - `git`, `gh` (authenticated: `gh auth login`), `bash`
 - A local clone of the core fork with both `origin` and `upstream` remotes
-  configured, at `~/dune-awakening-selfhost-docker` (override with
-  `ACP_CORE_DIR`)
+  configured, at `~/projects/repos/dune-awakening-selfhost-docker` (override
+  with `ACP_CORE_DIR` if your clone lives elsewhere — this default is this
+  account's own current path, not a portable assumption; it has already
+  drifted twice as repos moved between hosts, see CHANGELOG's 2026-08-15
+  entry)
 - Optionally, a local clone of the catalog fork at
-  `~/dune-docker-addon/dune-docker-addons` (override with `ACP_CATALOG_DIR`;
+  `~/projects/repos/dune-docker-addons` (override with `ACP_CATALOG_DIR`;
   `validate-and-report.sh` skips this check gracefully if absent)
 - A Discord webhook URL, provided via the `DISCORD_DEV_WEBHOOK_URL`
   environment variable (**cron does not read your shell's rc files** — set

@@ -237,3 +237,105 @@ teardown() {
   ACTIVITY=12
   [ "$ACTIVITY" -eq 12 ]
 }
+
+# ── Diverged-fork threshold/alert logic (added 2026-08-15) ──
+#
+# Regression coverage for a real gap: the "diverged" branch of
+# validate-and-report.sh previously treated ANY divergence, of any
+# size, forever, as simply "OK, by design" -- it never read $BEHIND
+# (already computed) and never filed an issue, no matter how large or
+# how long-growing the divergence became. These tests exercise the
+# same state-file-diff logic the real script now uses (mirroring the
+# fingerprint/PR-state tests above, which test the script's logic
+# inline rather than executing git/network operations).
+
+DIVERGENCE_STATE_FILE=""
+
+setup_divergence_state() {
+  DIVERGENCE_STATE_FILE="$TEST_DIR/test-divergence-state.txt"
+  export DIVERGENCE_STATE_FILE
+}
+
+@test "divergence: ahead-only (behind=0) never files an issue regardless of ahead count" {
+  BEHIND=0
+  # Mirrors the real script's guard: the issue-filing path is only
+  # ever reached when BEHIND -gt 0.
+  if [ "$BEHIND" -gt 0 ]; then
+    SHOULD_FILE="yes"
+  else
+    SHOULD_FILE="no"
+  fi
+  [ "$SHOULD_FILE" = "no" ]
+}
+
+@test "divergence: first time behind>0 is seen, it is reported (no prior state file)" {
+  setup_divergence_state
+  BEHIND=150
+  LAST_REPORTED_BEHIND="$(cat "$DIVERGENCE_STATE_FILE" 2>/dev/null || echo 0)"
+  [[ "$LAST_REPORTED_BEHIND" =~ ^[0-9]+$ ]] || LAST_REPORTED_BEHIND=0
+  [ "$LAST_REPORTED_BEHIND" -eq 0 ]
+  [ "$BEHIND" -gt "$LAST_REPORTED_BEHIND" ]
+}
+
+@test "divergence: same behind-count as last report does NOT re-file (suppresses hourly spam)" {
+  setup_divergence_state
+  echo "150" > "$DIVERGENCE_STATE_FILE"
+  BEHIND=150
+  LAST_REPORTED_BEHIND="$(cat "$DIVERGENCE_STATE_FILE" 2>/dev/null || echo 0)"
+  [[ "$LAST_REPORTED_BEHIND" =~ ^[0-9]+$ ]] || LAST_REPORTED_BEHIND=0
+  [ "$BEHIND" -eq "$LAST_REPORTED_BEHIND" ]
+  # Real script's condition is strictly "-gt", so equal counts must not re-fire.
+  if [ "$BEHIND" -gt "$LAST_REPORTED_BEHIND" ]; then
+    SHOULD_FILE="yes"
+  else
+    SHOULD_FILE="no"
+  fi
+  [ "$SHOULD_FILE" = "no" ]
+}
+
+@test "divergence: GROWING behind-count re-files even though an issue was already filed for a smaller gap" {
+  setup_divergence_state
+  echo "10" > "$DIVERGENCE_STATE_FILE"
+  BEHIND=25
+  LAST_REPORTED_BEHIND="$(cat "$DIVERGENCE_STATE_FILE" 2>/dev/null || echo 0)"
+  [[ "$LAST_REPORTED_BEHIND" =~ ^[0-9]+$ ]] || LAST_REPORTED_BEHIND=0
+  [ "$BEHIND" -gt "$LAST_REPORTED_BEHIND" ]
+}
+
+@test "divergence: SHRINKING behind-count (partial manual reconciliation) does not re-file" {
+  setup_divergence_state
+  echo "150" > "$DIVERGENCE_STATE_FILE"
+  BEHIND=90
+  LAST_REPORTED_BEHIND="$(cat "$DIVERGENCE_STATE_FILE" 2>/dev/null || echo 0)"
+  [[ "$LAST_REPORTED_BEHIND" =~ ^[0-9]+$ ]] || LAST_REPORTED_BEHIND=0
+  if [ "$BEHIND" -gt "$LAST_REPORTED_BEHIND" ]; then
+    SHOULD_FILE="yes"
+  else
+    SHOULD_FILE="no"
+  fi
+  [ "$SHOULD_FILE" = "no" ]
+}
+
+@test "divergence: fully resolved (behind returns to 0) exits the issue-filing path entirely" {
+  setup_divergence_state
+  echo "150" > "$DIVERGENCE_STATE_FILE"
+  BEHIND=0
+  # BEHIND -gt 0 is the real script's outer guard for this whole branch --
+  # once BEHIND is back to 0, the state file's prior value is irrelevant.
+  if [ "$BEHIND" -gt 0 ]; then
+    SHOULD_FILE="yes"
+  else
+    SHOULD_FILE="no"
+  fi
+  [ "$SHOULD_FILE" = "no" ]
+}
+
+@test "divergence: corrupted/non-numeric state file content is treated as zero, not a crash" {
+  setup_divergence_state
+  echo "not-a-number" > "$DIVERGENCE_STATE_FILE"
+  BEHIND=5
+  LAST_REPORTED_BEHIND="$(cat "$DIVERGENCE_STATE_FILE" 2>/dev/null || echo 0)"
+  [[ "$LAST_REPORTED_BEHIND" =~ ^[0-9]+$ ]] || LAST_REPORTED_BEHIND=0
+  [ "$LAST_REPORTED_BEHIND" -eq 0 ]
+  [ "$BEHIND" -gt "$LAST_REPORTED_BEHIND" ]
+}
