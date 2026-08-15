@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (2026-08-15, second pass)
+
+- **`gh issue create` crash on a nonexistent `priority:high` label**: three
+  call sites in `validate-and-report.sh` (upstream release detection, PR
+  conflict filing, and the new diverged-fork alert added earlier the same
+  day) applied `priority:high` against `yacketrj/dune-awakening-selfhost-docker`,
+  whose real label taxonomy uses `severity:*`, not `priority:*`. `gh issue
+  create` fails outright on a nonexistent label, and this call wasn't
+  guarded the way most others in this file are — under `set -euo
+  pipefail`, this crashed the entire script the moment any of these three
+  code paths were reached. Found on the very first real end-to-end run
+  after installing the corrected crontab (the upstream-release-detection
+  path fired immediately, since v1.3.87 was already released and unknown
+  to this monitor's state cache). Fixed to `severity:high`, confirmed
+  against the repo's real label list.
+
 ### Added (2026-08-15)
 
 - **Diverged-fork threshold/alert**: `validate-and-report.sh`'s "diverged"

@@ -72,7 +72,7 @@ if [ -n "$LATEST_TAG" ]; then
     FINGERPRINT="release-${LATEST_TAG}"
     COMMIT_LIST=$(git log --oneline HEAD.."$LATEST_TAG" 2>/dev/null | head -10 || echo "unknown")
     timeout 30 gh issue create --title "upstream: $LATEST_TAG released — $BEHIND_COUNT commits ahead" \
-      --label "enhancement,priority:high" \
+      --label "enhancement,severity:high" \
       --body "Upstream released **$LATEST_TAG** on $TAG_DATE.
 
 \`\`\`
@@ -247,7 +247,7 @@ if [ "$SYNC_STATUS" = "sync" ]; then
       FINGERPRINT="conflict-${pr}-$(date +%Y%m%d)"
       if ! grep -q "$FINGERPRINT" "$STATE_FILE" 2>/dev/null; then
         timeout 30 gh issue create --title "fix: PR #$pr ($branch) conflicts with upstream/main — needs rebase" \
-          --label "bug,priority:high" \
+          --label "bug,severity:high" \
           --body "PR https://github.com/Red-Blink/dune-awakening-selfhost-docker/pull/$pr has merge conflicts with the latest upstream release. The branch \`$branch\` needs to be rebased onto \`upstream/main\` and force-pushed." \
           --repo yacketrj/dune-awakening-selfhost-docker 2>/dev/null && echo "$FINGERPRINT" >> "$STATE_FILE" || true
       fi
@@ -320,7 +320,7 @@ elif [ "$SYNC_STATUS" = "diverged" ]; then
       DIVERGENCE_COMMIT_LIST=$(git log --oneline origin/main..upstream/main 2>/dev/null | head -10 || echo "unknown")
       timeout 30 gh issue create \
         --title "fork/upstream divergence: main is $AHEAD_OF_UPSTREAM ahead / $BEHIND behind upstream/main — needs reconciliation" \
-        --label "bug,priority:high" \
+        --label "bug,severity:high" \
         --body "This fork's \`main\` has diverged from \`Red-Blink/dune-awakening-selfhost-docker\`'s \`main\`: **$AHEAD_OF_UPSTREAM commits ahead**, **$BEHIND commits behind**.
 
 Being ahead alone is expected (local work not yet upstreamed) — this issue exists specifically because \`main\` is ALSO behind, meaning real upstream commits exist that this fork has not reconciled. This is never auto-synced (a genuinely diverged fork must not be fast-forwarded or reset — see this repo's own incident history), so it needs a human (or agent) to review and merge \`upstream/main\` in deliberately.
