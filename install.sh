@@ -60,8 +60,16 @@ fi
 
 echo
 echo "--- Checking monitored local clones ---"
-CORE_DIR="${ACP_CORE_DIR:-${HOME}/projects/dune/dune-awakening-selfhost-docker}"
-CATALOG_DIR="${ACP_CATALOG_DIR:-${HOME}/projects/dune/dune-docker-addons}"
+# BUG FIX (2026-08-15): default paths matched an earlier host's layout
+# (Tabr-Tau, decommissioned); this account's repos now live under
+# ~/projects/repos/ on the current host (DA-1). ACP_CORE_DIR/
+# ACP_CATALOG_DIR overrides already existed for exactly this situation
+# -- only the hardcoded fallback needed updating to match reality. Must
+# stay identical to validate-and-report.sh's own CORE_DIR/CATALOG_DIR
+# defaults, or this check can report "OK" while the real script still
+# fails. See Arrakis-Project#24.
+CORE_DIR="${ACP_CORE_DIR:-${HOME}/projects/repos/dune-awakening-selfhost-docker}"
+CATALOG_DIR="${ACP_CATALOG_DIR:-${HOME}/projects/repos/dune-docker-addons}"
 if [ -d "$CORE_DIR/.git" ]; then
   echo -e "  ${GREEN}OK:${NC} core fork clone found at $CORE_DIR"
   if git -C "$CORE_DIR" remote get-url upstream >/dev/null 2>&1; then
@@ -95,7 +103,7 @@ echo "--- Suggested crontab entry ---"
 echo "Run 'crontab -e' and add (adjust the env exports for your webhook/paths):"
 echo
 echo "  DISCORD_DEV_WEBHOOK_URL=https://discord.com/api/webhooks/REDACTED"
-echo "  0 * * * * flock -n ${HOME}/.cache/acp-ops-monitor.lock bash ${SCRIPT_DIR}/check-upstream-prs.sh >> /home/darkdante/.cache/acp-ops-monitor/cron.log 2>&1; flock -n ${HOME}/.cache/acp-ops-monitor.lock bash ${SCRIPT_DIR}/validate-and-report.sh >> /home/darkdante/.cache/acp-ops-monitor/cron.log 2>&1"
+echo "  0 * * * * flock -n ${HOME}/.cache/acp-ops-monitor.lock bash ${SCRIPT_DIR}/check-upstream-prs.sh >> ${HOME}/.cache/acp-ops-monitor/cron.log 2>&1; flock -n ${HOME}/.cache/acp-ops-monitor.lock bash ${SCRIPT_DIR}/validate-and-report.sh >> ${HOME}/.cache/acp-ops-monitor/cron.log 2>&1"
 echo
 echo "Cron does not read your shell's rc files, so environment variables set in"
 echo "\$HOME/.bashrc will NOT be visible to these scripts unless also set directly in"

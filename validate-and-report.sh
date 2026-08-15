@@ -24,10 +24,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/sync-direction.sh"
 
 NOTIFY="${HOME}/.local/bin/notify-discord.sh"
-# Updated 2026-07-25: repos moved under ~/projects/<workstream>/ as part
-# of a home-directory reorganization (basenames preserved).
-CORE_DIR="${HOME}/projects/dune/dune-awakening-selfhost-docker"
-CATALOG_DIR="${HOME}/projects/dune/dune-docker-addons"
+# BUG FIX (2026-08-15): this repo moved AGAIN, from the original WSL box
+# (Tabr-Tau, decommissioned) to the current host (DA-1), and this
+# hardcoded default was never updated -- meaning this entire script has
+# aborted immediately at the first `cd "$CORE_DIR"` below on every run
+# since that move (there was no crontab installed on DA-1 at all either,
+# compounding the gap -- see Arrakis-Project#24). ACP_CORE_DIR/
+# ACP_CATALOG_DIR env-var overrides (already supported by install.sh)
+# let an operator point this at wherever their real clones live without
+# editing this file again the next time a host changes; the defaults
+# below are just this account's current, real path on DA-1, not a
+# portable assumption.
+CORE_DIR="${ACP_CORE_DIR:-${HOME}/projects/repos/dune-awakening-selfhost-docker}"
+CATALOG_DIR="${ACP_CATALOG_DIR:-${HOME}/projects/repos/dune-docker-addons}"
 TODAY="$(date +%Y-%m-%d)"
 ISSUES=0
 ACTIVITY=0
@@ -45,7 +54,13 @@ git fetch origin --quiet 2>/dev/null || true
 
 # Detect new version tags
 LATEST_TAG=$(git tag --sort=-creatordate 2>/dev/null | grep -E '^v[0-9]' | head -1)
-TAG_STATE_FILE="/home/darkdante/.cache/acp-ops-monitor/known-tags.txt"
+# BUG FIX (2026-08-15): hardcoded to the old WSL box's real username
+# (darkdante) -- this account runs as root on the current host (DA-1).
+# check-upstream-prs.sh already uses ${HOME}/.cache/... correctly
+# throughout; this file's own state-file paths hadn't been updated to
+# match after the host move. See Arrakis-Project#24.
+TAG_STATE_FILE="${HOME}/.cache/acp-ops-monitor/known-tags.txt"
+mkdir -p "$(dirname "$TAG_STATE_FILE")"
 touch "$TAG_STATE_FILE"
 
 if [ -n "$LATEST_TAG" ]; then
@@ -267,7 +282,65 @@ elif [ "$SYNC_STATUS" = "diverged" ]; then
   # is the exact case that caused the 2026-07-22 incidents when the old
   # logic didn't distinguish it from "genuinely behind" — see
   # lib/sync-direction.sh and tests/sync-direction.bats.
-  echo -e "  ${GREEN}OK:${NC} core fork main is ahead of/diverged from upstream by design (local merges not yet upstreamed) — not syncing"
+  #
+  # BUG FIX (2026-08-15): "must never auto-sync" (correct, unchanged
+  # above) had silently become "must never even mention it again" --
+  # this branch logged one green line, forever, no matter how large
+  # $BEHIND grew or how long it had been growing, with zero threshold
+  # and zero use of $BEHIND (which was already computed above, just
+  # never read here). Confirmed via a real, concrete case this let
+  # through undetected: our own upstream PR #134 (RBAC/IAM policy
+  # engine) merged into Red-Blink/dune-awakening-selfhost-docker on
+  # 2026-08-11; the maintainer made a real follow-up fix on top of it
+  # shortly after that this fork's main never pulled back down. By the
+  # time this was found independently (dune-awakening-selfhost-docker
+  # #279), the fork was 162 commits ahead / 150 behind, with real,
+  # security-relevant divergence across ~13 files -- and this monitor
+  # had reported "OK... by design" on every single one of those hourly
+  # runs, despite already knowing the exact behind-count each time.
+  # "Ahead-only, never behind" genuinely doesn't need a human -- that
+  # really is the healthy, by-design case the comment above describes.
+  # "Ahead AND behind" means real upstream commits exist that this
+  # fork's main hasn't reconciled, which needs a human to actually look
+  # at, not a green log line. Mirrors the exact state-file-dedup +
+  # gh issue create pattern already used by the release-detection block
+  # above (section 0), so a fresh divergence is reported once, not every
+  # hour forever, and a GROWING divergence (BEHIND increasing since last
+  # report) re-notifies rather than staying silent just because an issue
+  # was already filed once for a smaller gap.
+  if [ "$BEHIND" -gt 0 ]; then
+    DIVERGENCE_STATE_FILE="${HOME}/.cache/acp-ops-monitor/known-divergence-behind-count.txt"
+    mkdir -p "$(dirname "$DIVERGENCE_STATE_FILE")"
+    touch "$DIVERGENCE_STATE_FILE"
+    LAST_REPORTED_BEHIND="$(cat "$DIVERGENCE_STATE_FILE" 2>/dev/null || echo 0)"
+    [[ "$LAST_REPORTED_BEHIND" =~ ^[0-9]+$ ]] || LAST_REPORTED_BEHIND=0
+
+    if [ "$BEHIND" -gt "$LAST_REPORTED_BEHIND" ]; then
+      echo -e "  ${YELLOW}DIVERGED:${NC} core fork main is $AHEAD_OF_UPSTREAM commits ahead AND $BEHIND commits behind upstream/main — real upstream work is not yet reconciled (was $LAST_REPORTED_BEHIND commits behind at last report)"
+      DIVERGENCE_COMMIT_LIST=$(git log --oneline origin/main..upstream/main 2>/dev/null | head -10 || echo "unknown")
+      timeout 30 gh issue create \
+        --title "fork/upstream divergence: main is $AHEAD_OF_UPSTREAM ahead / $BEHIND behind upstream/main — needs reconciliation" \
+        --label "bug,priority:high" \
+        --body "This fork's \`main\` has diverged from \`Red-Blink/dune-awakening-selfhost-docker\`'s \`main\`: **$AHEAD_OF_UPSTREAM commits ahead**, **$BEHIND commits behind**.
+
+Being ahead alone is expected (local work not yet upstreamed) — this issue exists specifically because \`main\` is ALSO behind, meaning real upstream commits exist that this fork has not reconciled. This is never auto-synced (a genuinely diverged fork must not be fast-forwarded or reset — see this repo's own incident history), so it needs a human (or agent) to review and merge \`upstream/main\` in deliberately.
+
+Most recent commits this fork is missing:
+\`\`\`
+$DIVERGENCE_COMMIT_LIST
+\`\`\`
+
+Action needed: review what upstream changed, merge \`upstream/main\` into this fork's \`main\` (never reset/force-push), resolve any real conflicts, verify CI." \
+        --repo yacketrj/dune-awakening-selfhost-docker 2>/dev/null
+      echo "$BEHIND" > "$DIVERGENCE_STATE_FILE"
+      REPORT="${REPORT}\n⚠️ Core fork main diverged: $AHEAD_OF_UPSTREAM ahead / $BEHIND behind upstream — needs reconciliation"
+      ISSUES=$((ISSUES + 1))
+    else
+      echo -e "  ${GREEN}OK:${NC} core fork main is $AHEAD_OF_UPSTREAM ahead / $BEHIND behind upstream — already reported, no growth since last check"
+    fi
+  else
+    echo -e "  ${GREEN}OK:${NC} core fork main is ahead of upstream by design (local merges not yet upstreamed), not behind — not syncing"
+  fi
 else
   echo -e "  ${GREEN}OK:${NC} core fork synced ($(echo "$UPSTREAM" | cut -c1-7))"
 fi
@@ -351,7 +424,8 @@ check_prs "Red-Blink/dune-docker-addons" "Catalog"
 
 # ─── 3b. Recently merged/closed PRs ───
 echo "--- 3b. Recent PR activity ---"
-PR_STATE_FILE="/home/darkdante/.cache/acp-ops-monitor/known-prs.txt"
+PR_STATE_FILE="${HOME}/.cache/acp-ops-monitor/known-prs.txt"
+mkdir -p "$(dirname "$PR_STATE_FILE")"
 touch "$PR_STATE_FILE"
 
 CORE_DIR_PR="${CORE_DIR}"
@@ -455,7 +529,11 @@ fi
 
 # ─── 6b. Upstream test drift ───
 echo "--- 6b. Upstream test drift ---"
-DRIFT_SCRIPT="${HOME}/projects/dune/dune-awakening-selfhost-docker/scripts/check-upstream-test-drift.sh"
+# BUG FIX (2026-08-15): was a second, independently hardcoded stale path
+# to the same repo $CORE_DIR already points at -- reuse $CORE_DIR so
+# there is exactly one place this account's real Core clone path is
+# defined, not two that can silently drift apart again. See Arrakis-Project#24.
+DRIFT_SCRIPT="${CORE_DIR}/scripts/check-upstream-test-drift.sh"
 if [ -x "$DRIFT_SCRIPT" ]; then
   DRIFT_OUT="$("$DRIFT_SCRIPT" 2>&1)"
   DRIFT_RC=$?
@@ -472,11 +550,12 @@ else
 fi
 
 # ─── 7. Summary + Issue Tracking ───
-STATE_FILE="/home/darkdante/.cache/acp-ops-monitor/issue-state.txt"
+STATE_FILE="${HOME}/.cache/acp-ops-monitor/issue-state.txt"
+mkdir -p "$(dirname "$STATE_FILE")"
 touch "$STATE_FILE"
 
 # Prune state files older than 30 days (prevents unbounded growth)
-for f in "$STATE_FILE" /home/darkdante/.cache/acp-ops-monitor/pr-states.json; do
+for f in "$STATE_FILE" "${HOME}/.cache/acp-ops-monitor/pr-states.json"; do
   if [ -f "$f" ]; then
     find "$(dirname "$f")" -name "$(basename "$f")" -mtime +30 -delete 2>/dev/null || true
   fi
@@ -518,7 +597,15 @@ elif [ "$ISSUES" -eq 0 ]; then
   # Only send "All Clear" when transitioning from issues→clean, NOT when
   # staying clean (suppresses 24 noisy notifications/day). If the previous
   # fingerprint was already "clean", skip — nothing changed.
-  local OLD_FINGERPRINT=""
+  #
+  # BUG FIX (2026-08-15): `local` is only valid inside a function --
+  # this entire script is flat (no function wraps this section), so
+  # this was a real shellcheck ERROR (SC2168), not just a warning, and
+  # had been failing this repo's own CI on main since at least
+  # 2026-08-10 (confirmed via `gh run list --workflow=ci.yml`). Plain
+  # variable assignment is correct here; there is no enclosing function
+  # for `local` to scope this to.
+  OLD_FINGERPRINT=""
   if [ -f "$STATE_FILE" ]; then
     read -r OLD_FINGERPRINT _ < "$STATE_FILE" 2>/dev/null || true
   fi
