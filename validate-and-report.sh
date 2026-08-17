@@ -308,20 +308,63 @@ elif [ "$SYNC_STATUS" = "diverged" ]; then
   # hour forever, and a GROWING divergence (BEHIND increasing since last
   # report) re-notifies rather than staying silent just because an issue
   # was already filed once for a smaller gap.
-  if [ "$BEHIND" -gt 0 ]; then
-    DIVERGENCE_STATE_FILE="${HOME}/.cache/acp-ops-monitor/known-divergence-behind-count.txt"
-    mkdir -p "$(dirname "$DIVERGENCE_STATE_FILE")"
-    touch "$DIVERGENCE_STATE_FILE"
-    LAST_REPORTED_BEHIND="$(cat "$DIVERGENCE_STATE_FILE" 2>/dev/null || echo 0)"
-    [[ "$LAST_REPORTED_BEHIND" =~ ^[0-9]+$ ]] || LAST_REPORTED_BEHIND=0
+  #
+  # BUG FIX (2026-08-17, acp-ops-monitor#33): the state file above only
+  # ever recorded the last-reported BEHIND count, never the GitHub issue
+  # number it was reported on. That meant every time BEHIND grew, this
+  # branch called `gh issue create` again -- filing a brand new issue
+  # instead of updating the one already open for the same underlying,
+  # still-unreconciled divergence. Confirmed in the wild: #289, #297,
+  # #298, #300 (and later #310, #312, #314) were four/seven separate
+  # open issues describing the exact same problem at different
+  # snapshots, none of which this script ever closed even after #279/#316
+  # actually reconciled the fork. Fixed by storing "BEHIND ISSUE_NUMBER"
+  # in the state file: a growing count now COMMENTS on the existing open
+  # issue (falling back to creating one only if none is tracked, or the
+  # tracked one is no longer open) instead of creating a new one, and the
+  # BEHIND==0 (resolved) path now closes the tracked issue with a
+  # resolution comment instead of just silently going green.
+  DIVERGENCE_STATE_FILE="${HOME}/.cache/acp-ops-monitor/known-divergence-behind-count.txt"
+  mkdir -p "$(dirname "$DIVERGENCE_STATE_FILE")"
+  touch "$DIVERGENCE_STATE_FILE"
+  read -r LAST_REPORTED_BEHIND LAST_ISSUE_NUMBER < "$DIVERGENCE_STATE_FILE" 2>/dev/null || true
+  [[ "${LAST_REPORTED_BEHIND:-}" =~ ^[0-9]+$ ]] || LAST_REPORTED_BEHIND=0
+  [[ "${LAST_ISSUE_NUMBER:-}" =~ ^[0-9]+$ ]] || LAST_ISSUE_NUMBER=""
 
+  if [ "$BEHIND" -gt 0 ]; then
     if [ "$BEHIND" -gt "$LAST_REPORTED_BEHIND" ]; then
       echo -e "  ${YELLOW}DIVERGED:${NC} core fork main is $AHEAD_OF_UPSTREAM commits ahead AND $BEHIND commits behind upstream/main — real upstream work is not yet reconciled (was $LAST_REPORTED_BEHIND commits behind at last report)"
       DIVERGENCE_COMMIT_LIST=$(git log --oneline origin/main..upstream/main 2>/dev/null | head -10 || echo "unknown")
-      timeout 30 gh issue create \
-        --title "fork/upstream divergence: main is $AHEAD_OF_UPSTREAM ahead / $BEHIND behind upstream/main — needs reconciliation" \
-        --label "bug,severity:high" \
-        --body "This fork's \`main\` has diverged from \`Red-Blink/dune-awakening-selfhost-docker\`'s \`main\`: **$AHEAD_OF_UPSTREAM commits ahead**, **$BEHIND commits behind**.
+
+      # Only reuse the tracked issue number if it's still actually open --
+      # an operator may have manually closed/superseded it without this
+      # script's knowledge, in which case falling through to create a new
+      # one is correct, not a regression back to the old duplicate-filing bug.
+      TRACKED_ISSUE_STATE=""
+      if [ -n "$LAST_ISSUE_NUMBER" ]; then
+        TRACKED_ISSUE_STATE=$(timeout 30 gh issue view "$LAST_ISSUE_NUMBER" \
+          --repo yacketrj/dune-awakening-selfhost-docker \
+          --json state -q .state 2>/dev/null || echo "")
+      fi
+
+      if [ "$TRACKED_ISSUE_STATE" = "OPEN" ]; then
+        echo "  Updating existing open divergence issue #$LAST_ISSUE_NUMBER instead of filing a duplicate."
+        timeout 30 gh issue comment "$LAST_ISSUE_NUMBER" \
+          --repo yacketrj/dune-awakening-selfhost-docker \
+          --body "Divergence has grown: now **$AHEAD_OF_UPSTREAM commits ahead**, **$BEHIND commits behind** (was $LAST_REPORTED_BEHIND behind at last report).
+
+Most recent commits this fork is missing:
+\`\`\`
+$DIVERGENCE_COMMIT_LIST
+\`\`\`
+
+Still needs a human (or agent) to review and merge \`upstream/main\` in deliberately (never reset/force-push)." 2>/dev/null
+        NEW_ISSUE_NUMBER="$LAST_ISSUE_NUMBER"
+      else
+        NEW_ISSUE_URL=$(timeout 30 gh issue create \
+          --title "fork/upstream divergence: main is $AHEAD_OF_UPSTREAM ahead / $BEHIND behind upstream/main — needs reconciliation" \
+          --label "bug,severity:high" \
+          --body "This fork's \`main\` has diverged from \`Red-Blink/dune-awakening-selfhost-docker\`'s \`main\`: **$AHEAD_OF_UPSTREAM commits ahead**, **$BEHIND commits behind**.
 
 Being ahead alone is expected (local work not yet upstreamed) — this issue exists specifically because \`main\` is ALSO behind, meaning real upstream commits exist that this fork has not reconciled. This is never auto-synced (a genuinely diverged fork must not be fast-forwarded or reset — see this repo's own incident history), so it needs a human (or agent) to review and merge \`upstream/main\` in deliberately.
 
@@ -331,15 +374,34 @@ $DIVERGENCE_COMMIT_LIST
 \`\`\`
 
 Action needed: review what upstream changed, merge \`upstream/main\` into this fork's \`main\` (never reset/force-push), resolve any real conflicts, verify CI." \
-        --repo yacketrj/dune-awakening-selfhost-docker 2>/dev/null
-      echo "$BEHIND" > "$DIVERGENCE_STATE_FILE"
-      REPORT="${REPORT}\n⚠️ Core fork main diverged: $AHEAD_OF_UPSTREAM ahead / $BEHIND behind upstream — needs reconciliation"
+          --repo yacketrj/dune-awakening-selfhost-docker 2>/dev/null || echo "")
+        NEW_ISSUE_NUMBER="${NEW_ISSUE_URL##*/}"
+      fi
+
+      printf '%s %s\n' "$BEHIND" "$NEW_ISSUE_NUMBER" > "$DIVERGENCE_STATE_FILE"
+      REPORT="${REPORT}\n⚠️ Core fork main diverged: $AHEAD_OF_UPSTREAM ahead / $BEHIND behind upstream — needs reconciliation (#${NEW_ISSUE_NUMBER:-unknown})"
       ISSUES=$((ISSUES + 1))
     else
-      echo -e "  ${GREEN}OK:${NC} core fork main is $AHEAD_OF_UPSTREAM ahead / $BEHIND behind upstream — already reported, no growth since last check"
+      echo -e "  ${GREEN}OK:${NC} core fork main is $AHEAD_OF_UPSTREAM ahead / $BEHIND behind upstream — already reported on #${LAST_ISSUE_NUMBER:-unknown}, no growth since last check"
     fi
   else
     echo -e "  ${GREEN}OK:${NC} core fork main is ahead of upstream by design (local merges not yet upstreamed), not behind — not syncing"
+    # Divergence resolved (BEHIND returned to 0) -- auto-close the
+    # tracked issue instead of leaving it open forever with no signal
+    # that the underlying problem is gone.
+    if [ -n "$LAST_ISSUE_NUMBER" ]; then
+      TRACKED_ISSUE_STATE=$(timeout 30 gh issue view "$LAST_ISSUE_NUMBER" \
+        --repo yacketrj/dune-awakening-selfhost-docker \
+        --json state -q .state 2>/dev/null || echo "")
+      if [ "$TRACKED_ISSUE_STATE" = "OPEN" ]; then
+        echo "  RESOLVED: closing divergence issue #$LAST_ISSUE_NUMBER (behind count returned to 0)"
+        timeout 30 gh issue close "$LAST_ISSUE_NUMBER" \
+          --repo yacketrj/dune-awakening-selfhost-docker \
+          --comment "Auto-closed: fork main is no longer behind upstream/main (\`BEHIND\` returned to 0 as of this check). Reconciliation is complete." 2>/dev/null || true
+        REPORT="${REPORT}\n✅ Core fork divergence resolved — closed #$LAST_ISSUE_NUMBER"
+      fi
+      rm -f "$DIVERGENCE_STATE_FILE"
+    fi
   fi
 else
   echo -e "  ${GREEN}OK:${NC} core fork synced ($(echo "$UPSTREAM" | cut -c1-7))"

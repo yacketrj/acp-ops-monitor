@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (2026-08-17)
+
+- **Divergence issue dedupe + auto-close** (#33): the diverged-fork alert
+  added 2026-08-15 correctly suppressed same/shrinking-count spam, but a
+  *growing* divergence still called `gh issue create` fresh every time
+  instead of updating the issue already open for the same underlying,
+  unreconciled divergence — confirmed in the wild as 7 separate duplicate
+  open issues (#289, #297, #298, #300, #310, #312, #314) describing the
+  exact same problem at different snapshots, none of which this script
+  ever closed even after the divergence was actually reconciled (#279/#316).
+  The state file now stores `BEHIND ISSUE_NUMBER` (space-separated,
+  backward-compatible with the old single-number format) instead of just
+  `BEHIND`: a growing count now comments on the tracked open issue instead
+  of creating a duplicate (falling back to creating a fresh one only if no
+  issue is tracked, or the tracked one was closed by someone else in the
+  meantime), and the `BEHIND == 0` (resolved) path now auto-closes the
+  tracked issue with a resolution comment instead of silently going green
+  forever with an open issue nobody ever closes. 9 new bats tests cover the
+  state-file format (old/new/empty), the reuse-vs-create branch, and the
+  auto-close-on-resolve branch.
+
 ### Fixed (2026-08-15, second pass)
 
 - **`gh issue create` crash on a nonexistent `priority:high` label**: three
