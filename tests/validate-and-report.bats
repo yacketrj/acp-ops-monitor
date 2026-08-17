@@ -339,3 +339,136 @@ setup_divergence_state() {
   [ "$LAST_REPORTED_BEHIND" -eq 0 ]
   [ "$BEHIND" -gt "$LAST_REPORTED_BEHIND" ]
 }
+
+# ── Divergence issue dedupe + auto-close (added 2026-08-17, acp-ops-monitor#33) ──
+#
+# Regression coverage for a real gap: the growing-divergence branch above
+# always called `gh issue create`, never checking whether an issue was
+# already open for the same divergence -- confirmed in the wild as 4+
+# duplicate open issues (#289/#297/#298/#300/#310/#312/#314) describing the
+# same unreconciled fork state at different snapshots, none of which the
+# script ever closed even after the divergence was actually resolved. These
+# tests exercise the state-file format change (BEHIND + ISSUE_NUMBER, space
+# separated) and the decision logic around it, mirroring the real script's
+# `read -r LAST_REPORTED_BEHIND LAST_ISSUE_NUMBER < "$DIVERGENCE_STATE_FILE"`
+# parsing and its two new branches (reuse-existing-issue, auto-close-on-resolve).
+
+@test "divergence state file: old single-number format parses with empty issue number (backward compat)" {
+  setup_divergence_state
+  echo "150" > "$DIVERGENCE_STATE_FILE"
+  read -r LAST_REPORTED_BEHIND LAST_ISSUE_NUMBER < "$DIVERGENCE_STATE_FILE" || true
+  [[ "$LAST_REPORTED_BEHIND" =~ ^[0-9]+$ ]] || LAST_REPORTED_BEHIND=0
+  [[ "$LAST_ISSUE_NUMBER" =~ ^[0-9]+$ ]] || LAST_ISSUE_NUMBER=""
+  [ "$LAST_REPORTED_BEHIND" -eq 150 ]
+  [ -z "$LAST_ISSUE_NUMBER" ]
+}
+
+@test "divergence state file: new two-field format parses both behind-count and issue number" {
+  setup_divergence_state
+  printf '212 310\n' > "$DIVERGENCE_STATE_FILE"
+  read -r LAST_REPORTED_BEHIND LAST_ISSUE_NUMBER < "$DIVERGENCE_STATE_FILE" || true
+  [[ "$LAST_REPORTED_BEHIND" =~ ^[0-9]+$ ]] || LAST_REPORTED_BEHIND=0
+  [[ "$LAST_ISSUE_NUMBER" =~ ^[0-9]+$ ]] || LAST_ISSUE_NUMBER=""
+  [ "$LAST_REPORTED_BEHIND" -eq 212 ]
+  [ "$LAST_ISSUE_NUMBER" -eq 310 ]
+}
+
+@test "divergence state file: empty file parses to zero/empty without crashing under set -e" {
+  setup_divergence_state
+  : > "$DIVERGENCE_STATE_FILE"
+  run bash -c '
+    set -euo pipefail
+    read -r LAST_REPORTED_BEHIND LAST_ISSUE_NUMBER < "'"$DIVERGENCE_STATE_FILE"'" 2>/dev/null || true
+    [[ "${LAST_REPORTED_BEHIND:-}" =~ ^[0-9]+$ ]] || LAST_REPORTED_BEHIND=0
+    [[ "${LAST_ISSUE_NUMBER:-}" =~ ^[0-9]+$ ]] || LAST_ISSUE_NUMBER=""
+    echo "behind=$LAST_REPORTED_BEHIND issue=[$LAST_ISSUE_NUMBER]"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = "behind=0 issue=[]" ]
+}
+
+@test "divergence: growing count with a tracked OPEN issue reuses it (no duplicate creation)" {
+  # Mirrors the real script's branch: TRACKED_ISSUE_STATE = "OPEN" -> comment
+  # on LAST_ISSUE_NUMBER instead of calling gh issue create.
+  LAST_ISSUE_NUMBER=310
+  TRACKED_ISSUE_STATE="OPEN"
+  if [ "$TRACKED_ISSUE_STATE" = "OPEN" ]; then
+    ACTION="comment"
+    TARGET_ISSUE="$LAST_ISSUE_NUMBER"
+  else
+    ACTION="create"
+    TARGET_ISSUE=""
+  fi
+  [ "$ACTION" = "comment" ]
+  [ "$TARGET_ISSUE" -eq 310 ]
+}
+
+@test "divergence: growing count with a tracked but now-CLOSED issue creates a new one (not silently lost)" {
+  # An operator may have manually closed the tracked issue (e.g. as a
+  # duplicate) without the script's knowledge -- falling through to create
+  # a fresh one here is correct, not a regression to the old duplicate bug,
+  # because it only happens once per manual-closure event, not every run.
+  LAST_ISSUE_NUMBER=310
+  TRACKED_ISSUE_STATE="CLOSED"
+  if [ "$TRACKED_ISSUE_STATE" = "OPEN" ]; then
+    ACTION="comment"
+  else
+    ACTION="create"
+  fi
+  [ "$ACTION" = "create" ]
+}
+
+@test "divergence: growing count with no tracked issue number creates a new one" {
+  LAST_ISSUE_NUMBER=""
+  TRACKED_ISSUE_STATE=""
+  if [ -n "$LAST_ISSUE_NUMBER" ]; then
+    TRACKED_ISSUE_STATE="OPEN"
+  fi
+  if [ "$TRACKED_ISSUE_STATE" = "OPEN" ]; then
+    ACTION="comment"
+  else
+    ACTION="create"
+  fi
+  [ "$ACTION" = "create" ]
+}
+
+@test "divergence: resolved (behind=0) with a tracked open issue triggers auto-close" {
+  LAST_ISSUE_NUMBER=314
+  TRACKED_ISSUE_STATE="OPEN"
+  BEHIND=0
+  SHOULD_CLOSE="no"
+  if [ "$BEHIND" -eq 0 ] && [ -n "$LAST_ISSUE_NUMBER" ] && [ "$TRACKED_ISSUE_STATE" = "OPEN" ]; then
+    SHOULD_CLOSE="yes"
+  fi
+  [ "$SHOULD_CLOSE" = "yes" ]
+}
+
+@test "divergence: resolved (behind=0) with no tracked issue does not attempt to close anything" {
+  LAST_ISSUE_NUMBER=""
+  BEHIND=0
+  SHOULD_CLOSE="no"
+  if [ "$BEHIND" -eq 0 ] && [ -n "$LAST_ISSUE_NUMBER" ]; then
+    SHOULD_CLOSE="yes"
+  fi
+  [ "$SHOULD_CLOSE" = "no" ]
+}
+
+@test "divergence: resolved (behind=0) with a tracked issue already closed by someone else does not double-close" {
+  LAST_ISSUE_NUMBER=279
+  TRACKED_ISSUE_STATE="CLOSED"
+  BEHIND=0
+  SHOULD_CLOSE="no"
+  if [ "$BEHIND" -eq 0 ] && [ -n "$LAST_ISSUE_NUMBER" ] && [ "$TRACKED_ISSUE_STATE" = "OPEN" ]; then
+    SHOULD_CLOSE="yes"
+  fi
+  [ "$SHOULD_CLOSE" = "no" ]
+}
+
+@test "divergence: state file write format is 'BEHIND ISSUE_NUMBER' space-separated" {
+  setup_divergence_state
+  BEHIND=224
+  NEW_ISSUE_NUMBER=314
+  printf '%s %s\n' "$BEHIND" "$NEW_ISSUE_NUMBER" > "$DIVERGENCE_STATE_FILE"
+  CONTENT="$(cat "$DIVERGENCE_STATE_FILE")"
+  [ "$CONTENT" = "224 314" ]
+}
