@@ -83,6 +83,15 @@ jobs:
           find . -name "*.json" -not -path "./node_modules/*" -not -path "./.git/*" -exec python3 -c "import json,sys; json.load(open(sys.argv[1]))" {} \; || { echo "Invalid JSON found"; exit 1; }
           echo "All JSON files valid"
 
+  # gitleaks/trivy split into their own job below (calling the org-shared
+  # reusable-security-scan.yml) -- gitleaks used gitleaks/gitleaks-action,
+  # which started requiring a paid org-account license this session (the
+  # env wiring fix is now moot, the shared workflow's raw gitleaks CLI
+  # sidesteps the license requirement entirely). semgrep stays here: this
+  # repo deliberately uses p/security-audit + p/secrets (documented
+  # reasoning above about p/bash's removal from the registry and
+  # ShellCheck already covering shell-specific analysis), different from
+  # the shared workflow's fixed p/default + p/secrets.
   security:
     name: Security Scanning
     runs-on: ubuntu-latest
@@ -90,11 +99,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: Run gitleaks
-        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
       - name: Run semgrep
         # NOTE: returntocorp/semgrep-action (previously used here) is
         # unmaintained -- no commits since Jan 2024, and its current home
@@ -113,18 +117,18 @@ jobs:
         run: |
           pip install --quiet semgrep
           semgrep scan --config p/security-audit --config p/secrets --error
-      - name: Run trivy
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          severity: 'CRITICAL,HIGH'
-          exit-code: '1'
+
+  gitleaks-trivy:
+    uses: Project-Arrakis/.github/.github/workflows/reusable-security-scan.yml@feat/reusable-security-scan-workflow
+    with:
+      run-semgrep: false
+    secrets:
+      SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
 
   ci-gate:
     name: CI Gate
     if: ${{ always() }}
-    needs: [shellcheck, actionlint, markdownlint, test, validate-json, security]
+    needs: [shellcheck, actionlint, markdownlint, test, validate-json, security, gitleaks-trivy]
     runs-on: ubuntu-latest
     steps:
       - name: Require every check to pass
@@ -135,10 +139,11 @@ jobs:
           TEST: ${{ needs.test.result }}
           JSON: ${{ needs.validate-json.result }}
           SECURITY: ${{ needs.security.result }}
+          GITLEAKS_TRIVY: ${{ needs.gitleaks-trivy.result }}
         run: |
           set -euo pipefail
           failed=0
-          for result in "$SHELLCHECK" "$ACTIONLINT" "$MARKDOWNLINT" "$TEST" "$JSON" "$SECURITY"; do
+          for result in "$SHELLCHECK" "$ACTIONLINT" "$MARKDOWNLINT" "$TEST" "$JSON" "$SECURITY" "$GITLEAKS_TRIVY"; do
             if [ "$result" != "success" ]; then
               failed=1
             fi
