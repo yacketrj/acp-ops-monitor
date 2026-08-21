@@ -119,7 +119,7 @@ jobs:
           semgrep scan --config p/security-audit --config p/secrets --error
 
   gitleaks-trivy:
-    uses: Project-Arrakis/.github/.github/workflows/reusable-security-scan.yml@feat/reusable-security-scan-workflow
+    uses: Project-Arrakis/.github/.github/workflows/reusable-security-scan.yml@main
     with:
       run-semgrep: false
     secrets:
