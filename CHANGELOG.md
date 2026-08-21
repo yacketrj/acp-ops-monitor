@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (2026-08-21)
+
+- **`check_ci()` used `gh run list --branch main --limit 1`, which picks whichever *workflow* happens to be chronologically newest, not necessarily the one containing the real security jobs.** Confirmed directly on `dune-awakening-selfhost-docker`: the same push triggers CI/CodeQL/Semgrep/etc, and `--limit 1` returned a CodeQL run (no security jobs at all) while the CI workflow's own `security-checks` job, run moments earlier on the same commit, was invisible to this check. Rewritten to use the commit's aggregated check-runs (`GET /repos/{repo}/commits/{ref}/check-runs`) instead, which covers every workflow's jobs for one exact commit in a single call.
+- **This monitor's own CI-health check was blind to a job reporting "success" while its real work silently never ran** — exactly the bug found the same day in `dune-awakening-selfhost-docker`'s `security-checks` job (gitleaks/trivy binaries missing, script fails open, job still concludes `success`). `check_ci()` now additionally fetches the log of any successful security-related job and checks for known fail-open markers (`SKIP: <tool> is not installed`, `missing ... license`), reporting `WARN` instead of `OK` when found. Verified end-to-end against the real (still-unpatched at time of writing) `dune-awakening-selfhost-docker` main branch — correctly flags `security-checks` as silently skipped, and stays clean (`OK`) against a repo whose scanners genuinely run.
+- **Repo references in `check-upstream-prs.sh` and `validate-and-report.sh` still pointed at the pre-migration `yacketrj/*` slugs** (`arrakis-control-panel`, `acp-landing`, `dune-ops-observability-addon`, `dune-docker-addons`, `dune-awakening-selfhost-docker`, `acp-ops-monitor`) instead of the current `Project-Arrakis/*` org repos. These were still resolving via GitHub's rename/transfer redirect, so nothing was actively broken, but it's fragile (redirects aren't guaranteed for every API path, and break if a new repo is ever created at the old name) — updated to the canonical names (`arrakis-control-panel`→`sentinel`, `acp-landing`→`sentinel-web`).
+
 ### Fixed (2026-08-17)
 
 - **Divergence issue dedupe + auto-close** (#33): the diverged-fork alert
