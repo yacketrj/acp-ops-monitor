@@ -137,11 +137,13 @@ fi
 }
 
 @test "CI failure on any monitored repo produces a non-zero exit code" {
+  # check_ci_health (lib/ci-health.sh) queries commit check-runs, not
+  # `gh run list` -- see that file's header for why.
   mock_gh '
 if [[ "$*" == *"--state open"* ]] || [[ "$*" == *"--state merged"* ]]; then
   echo -n ""
-elif [[ "$*" == *"run list"* ]]; then
-  echo "failure"
+elif [[ "$*" == *"check-runs"* ]]; then
+  echo "[{\"name\":\"CI\",\"conclusion\":\"failure\"}]"
 fi
 '
   run bash "$SCRIPT"
@@ -153,11 +155,32 @@ fi
   mock_gh '
 if [[ "$*" == *"--state open"* ]] || [[ "$*" == *"--state merged"* ]]; then
   echo -n ""
-elif [[ "$*" == *"run list"* ]]; then
-  echo "success"
+elif [[ "$*" == *"check-runs"* ]] && [[ "$*" == *"select(.name"* ]]; then
+  # The silent-skip job filter -- no security-named job, nothing to check.
+  echo "[]"
+elif [[ "$*" == *"check-runs"* ]]; then
+  echo "[{\"name\":\"build\",\"conclusion\":\"success\"}]"
 fi
 '
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"All checks passed"* ]]
+}
+
+@test "CI success but a security job silently skipped its scan produces a non-zero exit code" {
+  mock_gh '
+if [[ "$*" == *"--state open"* ]] || [[ "$*" == *"--state merged"* ]]; then
+  echo -n ""
+elif [[ "$*" == *"check-runs"* ]] && [[ "$*" == *"select(.name"* ]]; then
+  echo "[{\"id\":123,\"name\":\"security-checks\"}]"
+elif [[ "$*" == *"check-runs"* ]]; then
+  echo "[{\"name\":\"security-checks\",\"conclusion\":\"success\"}]"
+elif [[ "$*" == *"actions/jobs/123/logs"* ]]; then
+  echo "SKIP: gitleaks is not installed."
+fi
+'
+  run bash "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"CI issue(s) found"* ]]
+  [[ "$output" == *"silently skipped"* ]]
 }

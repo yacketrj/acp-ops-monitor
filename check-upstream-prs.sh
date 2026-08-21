@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # check-upstream-prs.sh — Track all yacketrj upstream PRs across both repos,
 # plus real upstream release tags on repos this fork tracks/syncs from.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/lib/ci-health.sh"
+
 # Pre-flight: verify GitHub authentication
 if ! gh auth status >/dev/null 2>&1; then
   echo "FATAL: gh not authenticated. Set GH_TOKEN." >&2
@@ -142,29 +145,12 @@ check_upstream_release() {
   NEW_RELEASE_STATE=$(echo "$NEW_RELEASE_STATE" | python3 -c "import json,sys; d=json.load(sys.stdin); d['$repo']='$latest_tag'; print(json.dumps(d))" 2>/dev/null || echo "$NEW_RELEASE_STATE")
 }
 
-# Check CI status for all repos
-check_ci() {
-  local repo="$1" label="$2"
-  local latest
-  latest=$(timeout 30 gh run list --repo "$repo" --branch main --limit 1 --json conclusion --jq '.[0].conclusion' 2>/dev/null || echo "")
-  local repo_name
-  repo_name=$(echo "$repo" | cut -d'/' -f2)
-  if [ "$latest" = "failure" ]; then
-    echo -e "  ${RED}FAIL:${NC} $repo_name — latest CI: failure"
-    ISSUES=$((ISSUES + 1))
-  elif [ -n "$latest" ]; then
-    echo -e "  ${GREEN}OK:${NC} $repo_name — CI: $latest"
-  else
-    echo -e "  ${YELLOW}SKIP:${NC} $repo_name — no CI runs found"
-  fi
-}
-
 check_repo "Red-Blink/dune-awakening-selfhost-docker" "Core"
 check_repo "Red-Blink/dune-docker-addons" "Catalog"
 echo
-check_repo "yacketrj/dune-ops-observability-addon" "Addon"
-check_repo "yacketrj/arrakis-control-panel" "ACP"
-check_repo "yacketrj/acp-landing" "Landing"
+check_repo "Project-Arrakis/dune-ops-observability-addon" "Addon"
+check_repo "Project-Arrakis/sentinel" "Sentinel"
+check_repo "Project-Arrakis/sentinel-web" "Sentinel-Web"
 
 echo ""
 echo "--- Upstream Release Status ---"
@@ -177,11 +163,11 @@ check_upstream_release "Red-Blink/dune-docker-addons" "Catalog upstream"
 
 echo ""
 echo "--- CI Status ---"
-check_ci "Red-Blink/dune-awakening-selfhost-docker" "Core"
-check_ci "yacketrj/dune-ops-observability-addon" "Addon"
-check_ci "yacketrj/dune-docker-addons" "Catalog"
-check_ci "yacketrj/arrakis-control-panel" "ACP"
-check_ci "yacketrj/acp-landing" "Landing"
+check_ci_health "Red-Blink/dune-awakening-selfhost-docker" "Core" || true
+check_ci_health "Project-Arrakis/dune-ops-observability-addon" "Addon" || true
+check_ci_health "Project-Arrakis/dune-docker-addons" "Catalog" || true
+check_ci_health "Project-Arrakis/sentinel" "Sentinel" || true
+check_ci_health "Project-Arrakis/sentinel-web" "Sentinel-Web" || true
 
 # BUG FIX (2026-07-25): NEW_STATE is a bash associative array
 # (declare -A), not a scalar string -- `echo "$NEW_STATE"` under

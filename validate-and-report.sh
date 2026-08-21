@@ -22,6 +22,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/sync-direction.sh
 source "$SCRIPT_DIR/lib/sync-direction.sh"
+# shellcheck source=lib/ci-health.sh
+source "$SCRIPT_DIR/lib/ci-health.sh"
 
 NOTIFY="${HOME}/.local/bin/notify-discord.sh"
 # BUG FIX (2026-08-15): this repo moved AGAIN, from the original WSL box
@@ -80,7 +82,7 @@ $COMMIT_LIST
 \`\`\`
 
 Action needed: sync fork main, rebase open PRs, verify CI." \
-      --repo yacketrj/dune-awakening-selfhost-docker 2>/dev/null
+      --repo Project-Arrakis/dune-awakening-selfhost-docker 2>/dev/null
     echo "$LATEST_TAG" >> "$TAG_STATE_FILE"
     REPORT="${REPORT}\n🆕 **$LATEST_TAG** released ($BEHIND_COUNT commits behind)"
     ACTIVITY=$((ACTIVITY + 1))
@@ -249,7 +251,7 @@ if [ "$SYNC_STATUS" = "sync" ]; then
         timeout 30 gh issue create --title "fix: PR #$pr ($branch) conflicts with upstream/main — needs rebase" \
           --label "bug,severity:high" \
           --body "PR https://github.com/Red-Blink/dune-awakening-selfhost-docker/pull/$pr has merge conflicts with the latest upstream release. The branch \`$branch\` needs to be rebased onto \`upstream/main\` and force-pushed." \
-          --repo yacketrj/dune-awakening-selfhost-docker 2>/dev/null && echo "$FINGERPRINT" >> "$STATE_FILE" || true
+          --repo Project-Arrakis/dune-awakening-selfhost-docker 2>/dev/null && echo "$FINGERPRINT" >> "$STATE_FILE" || true
       fi
     else
       echo -e "${YELLOW}$mergeable${NC}"
@@ -343,14 +345,14 @@ elif [ "$SYNC_STATUS" = "diverged" ]; then
       TRACKED_ISSUE_STATE=""
       if [ -n "$LAST_ISSUE_NUMBER" ]; then
         TRACKED_ISSUE_STATE=$(timeout 30 gh issue view "$LAST_ISSUE_NUMBER" \
-          --repo yacketrj/dune-awakening-selfhost-docker \
+          --repo Project-Arrakis/dune-awakening-selfhost-docker \
           --json state -q .state 2>/dev/null || echo "")
       fi
 
       if [ "$TRACKED_ISSUE_STATE" = "OPEN" ]; then
         echo "  Updating existing open divergence issue #$LAST_ISSUE_NUMBER instead of filing a duplicate."
         timeout 30 gh issue comment "$LAST_ISSUE_NUMBER" \
-          --repo yacketrj/dune-awakening-selfhost-docker \
+          --repo Project-Arrakis/dune-awakening-selfhost-docker \
           --body "Divergence has grown: now **$AHEAD_OF_UPSTREAM commits ahead**, **$BEHIND commits behind** (was $LAST_REPORTED_BEHIND behind at last report).
 
 Most recent commits this fork is missing:
@@ -374,7 +376,7 @@ $DIVERGENCE_COMMIT_LIST
 \`\`\`
 
 Action needed: review what upstream changed, merge \`upstream/main\` into this fork's \`main\` (never reset/force-push), resolve any real conflicts, verify CI." \
-          --repo yacketrj/dune-awakening-selfhost-docker 2>/dev/null || echo "")
+          --repo Project-Arrakis/dune-awakening-selfhost-docker 2>/dev/null || echo "")
         NEW_ISSUE_NUMBER="${NEW_ISSUE_URL##*/}"
       fi
 
@@ -391,12 +393,12 @@ Action needed: review what upstream changed, merge \`upstream/main\` into this f
     # that the underlying problem is gone.
     if [ -n "$LAST_ISSUE_NUMBER" ]; then
       TRACKED_ISSUE_STATE=$(timeout 30 gh issue view "$LAST_ISSUE_NUMBER" \
-        --repo yacketrj/dune-awakening-selfhost-docker \
+        --repo Project-Arrakis/dune-awakening-selfhost-docker \
         --json state -q .state 2>/dev/null || echo "")
       if [ "$TRACKED_ISSUE_STATE" = "OPEN" ]; then
         echo "  RESOLVED: closing divergence issue #$LAST_ISSUE_NUMBER (behind count returned to 0)"
         timeout 30 gh issue close "$LAST_ISSUE_NUMBER" \
-          --repo yacketrj/dune-awakening-selfhost-docker \
+          --repo Project-Arrakis/dune-awakening-selfhost-docker \
           --comment "Auto-closed: fork main is no longer behind upstream/main (\`BEHIND\` returned to 0 as of this check). Reconciliation is complete." 2>/dev/null || true
         REPORT="${REPORT}\n✅ Core fork divergence resolved — closed #$LAST_ISSUE_NUMBER"
       fi
@@ -521,19 +523,18 @@ done < <(timeout 60 gh pr list --repo Red-Blink/dune-awakening-selfhost-docker -
 # the Dune/ACP application repos. Found via this exact gap: this repo's
 # own CI had been failing on main for several hours before being noticed
 # manually, specifically because this check didn't include itself.
+# Delegates to lib/ci-health.sh (shared with check-upstream-prs.sh) --
+# see that file's header for the two real bugs this replaced: `gh run
+# list --limit 1` picking an unrelated workflow's run instead of the one
+# with the real security jobs, and being blind to a job reporting
+# "success" while its scanner silently never ran.
 echo "--- 4. CI failures ---"
-for r in yacketrj/dune-awakening-selfhost-docker yacketrj/dune-ops-observability-addon yacketrj/dune-docker-addons yacketrj/arrakis-control-panel yacketrj/acp-landing yacketrj/acp-ops-monitor yacketrj/tools; do
+for r in Project-Arrakis/dune-awakening-selfhost-docker Project-Arrakis/dune-ops-observability-addon Project-Arrakis/dune-docker-addons Project-Arrakis/sentinel Project-Arrakis/sentinel-web Project-Arrakis/sentinel-ops-monitor yacketrj/tools; do
   REPO_NAME=$(echo "$r" | cut -d'/' -f2)
-  RUN_JSON=$(timeout 30 gh run list --repo "$r" --branch main --limit 1 --json conclusion 2>/dev/null || echo "[]")
-  LATEST=$(echo "$RUN_JSON" | jq -r '.[0].conclusion // "none"' 2>/dev/null || echo "none")
-  if [ "$LATEST" = "failure" ]; then
-    echo -e "  ${RED}FAIL:${NC} $REPO_NAME — latest CI: failure"
-    REPORT="${REPORT}\n⚠️ **$REPO_NAME** — latest CI \`failure\` needs resolution"
-    ISSUES=$((ISSUES + 1))
-  elif [ "$LATEST" = "none" ]; then
-    echo -e "  ${YELLOW}SKIP:${NC} $REPO_NAME — no CI runs found (no workflow configured?)"
-  else
-    echo -e "  ${GREEN}OK:${NC} $REPO_NAME — clean"
+  ISSUES_BEFORE=$ISSUES
+  check_ci_health "$r" "$REPO_NAME" || true
+  if [ "$ISSUES" -gt "$ISSUES_BEFORE" ]; then
+    REPORT="${REPORT}\n⚠️ **$REPO_NAME** — latest CI needs resolution (see monitor log for detail: failure, or a scanner may have silently skipped)"
   fi
 done
 
